@@ -5,6 +5,8 @@ import { validateApiKey, errorResponse } from "@/lib/api-key";
 import { enqueueAudit } from "@/lib/queue";
 import crypto from "crypto";
 
+const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|169\.254\.|\[::1\]|\[fc|\[fd|\[fe80)/i;
+
 const CreateAuditSchema = z.object({
   repoUrl: z
     .string()
@@ -13,18 +15,19 @@ const CreateAuditSchema = z.object({
       (u) => {
         try {
           const url = new URL(u);
-          return (
-            ["https:", "http:"].includes(url.protocol) &&
-            !url.hostname.match(/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i)
-          );
+          // HTTPS only
+          if (url.protocol !== "https:") return false;
+          // Block private/loopback/link-local
+          if (BLOCKED_HOSTS.test(url.hostname)) return false;
+          // Block bare IPs (simple heuristic)
+          if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(url.hostname)) return false;
+          return true;
         } catch {
           return false;
         }
       },
-      { message: "Invalid or private URL (SSRF protection)" }
-    )
-    .optional(),
-  uploadPath: z.string().max(500).optional(),
+      { message: "Only public HTTPS URLs are allowed (SSRF protection)" }
+    ),
   mode: z.enum(["SCAN", "PROVE", "FIX_PLAN"]).default("SCAN"),
 });
 
@@ -72,22 +75,16 @@ export async function POST(request: NextRequest) {
       return errorResponse(parsed.error.issues.map((i) => i.message).join(", "), 400);
     }
 
-    const { repoUrl, uploadPath, mode } = parsed.data;
-
-    if (!repoUrl && !uploadPath) {
-      return errorResponse("Either repoUrl or uploadPath is required", 400);
-    }
-
+    const { repoUrl, mode } = parsed.data;
     const id = crypto.randomUUID();
-    const repoSource = repoUrl ? "url" : "upload";
 
     const audit = await prisma.auditJob.create({
       data: {
         id,
         status: "QUEUED",
         mode,
-        repoSource,
-        repoUrl: repoUrl ?? uploadPath ?? "",
+        repoSource: "url",
+        repoUrl,
         repoMeta: {},
       },
     });
@@ -95,9 +92,8 @@ export async function POST(request: NextRequest) {
     await enqueueAudit({
       auditJobId: id,
       mode,
-      repoSource: repoSource as "url" | "upload",
+      repoSource: "url",
       repoUrl,
-      uploadPath,
     });
 
     return NextResponse.json({ audit }, { status: 201 });

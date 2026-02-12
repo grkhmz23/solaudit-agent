@@ -99,7 +99,9 @@ model Artifact {
   auditJob    AuditJob     @relation(fields: [auditJobId], references: [id], onDelete: Cascade)
   type        ArtifactType
   name        String
-  path        String       // local file path or object key
+  objectKey   String       // R2/S3 object key
+  contentType String       @default("application/octet-stream")
+  sha256      String?
   metadata    Json?
   sizeBytes   Int          @default(0)
 

@@ -2,20 +2,31 @@
   "name": "@solaudit/db",
   "version": "1.0.0",
   "private": true,
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "scripts": {
+    "build": "prisma generate && tsup src/index.ts --format esm --dts --clean --out-dir dist --external @prisma/client",
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "seed": "tsx src/seed.ts",
-    "studio": "prisma studio"
+    "studio": "prisma studio",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^5.14.0"
   },
   "devDependencies": {
+    "@types/node": "^20.14.2",
     "prisma": "^5.14.0",
+    "tsup": "^8.4.0",
     "tsx": "^4.11.0",
     "typescript": "^5.4.5"
   }

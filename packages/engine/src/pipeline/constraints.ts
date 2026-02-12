@@ -166,4 +166,3 @@ export function checkConstraints(
   return violations;
 }
 
-export type { ConstraintCheckerPlugin };

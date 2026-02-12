@@ -14,7 +14,18 @@ export async function GET(
       where: { id: params.id },
       include: {
         findings: { orderBy: { severity: "asc" } },
-        artifacts: { orderBy: { type: "asc" } },
+        artifacts: {
+          orderBy: { type: "asc" },
+          select: {
+            id: true,
+            type: true,
+            name: true,
+            contentType: true,
+            metadata: true,
+            sizeBytes: true,
+            createdAt: true,
+          },
+        },
       },
     });
 
@@ -40,7 +51,6 @@ export async function DELETE(
     await prisma.finding.deleteMany({ where: { auditJobId: params.id } });
     await prisma.artifact.deleteMany({ where: { auditJobId: params.id } });
     await prisma.auditJob.delete({ where: { id: params.id } });
-
     return NextResponse.json({ deleted: true });
   } catch (err: unknown) {
     console.error("DELETE /api/audits/[id] error:", err);

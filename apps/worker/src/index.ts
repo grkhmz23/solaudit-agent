@@ -1,26 +1,25 @@
 import { Worker, Job } from "bullmq";
-import { execSync, exec } from "child_process";
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, readdirSync } from "fs";
+import { execSync } from "child_process";
+import { existsSync, mkdirSync, rmSync, readdirSync, statSync } from "fs";
 import path from "path";
 import { prisma } from "@solaudit/db";
 import { AUDIT_QUEUE_NAME, createRedisConnection, type AuditJobData } from "@solaudit/queue";
 import { runPipeline } from "@solaudit/engine";
+import { getStorage } from "@solaudit/storage";
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "/tmp/solaudit-storage";
-const WORKER_ENABLE_PROVE = process.env.WORKER_ENABLE_PROVE === "true";
 const MAX_REPO_SIZE_MB = 200;
 const CLONE_TIMEOUT_MS = 60_000;
-const PIPELINE_TIMEOUT_MS = 300_000;
 
 if (!existsSync(STORAGE_DIR)) {
   mkdirSync(STORAGE_DIR, { recursive: true });
 }
 
-console.log("[worker] starting solaudit worker...");
-console.log(`[worker] storage: ${STORAGE_DIR}`);
-console.log(`[worker] prove mode: ${WORKER_ENABLE_PROVE ? "enabled" : "disabled"}`);
-
+const storage = getStorage();
 const redis = createRedisConnection();
+
+console.log(`[worker] starting solaudit worker...`);
+console.log(`[worker] storage dir: ${STORAGE_DIR}`);
 
 const worker = new Worker<AuditJobData>(
   AUDIT_QUEUE_NAME,
@@ -28,50 +27,27 @@ const worker = new Worker<AuditJobData>(
     const { auditJobId, repoUrl, repoSource, mode } = job.data;
     const jobDir = path.join(STORAGE_DIR, "jobs", auditJobId);
     const repoDir = path.join(jobDir, "repo");
-    const artifactsDir = path.join(jobDir, "artifacts");
 
     try {
-      // Mark as running
       await prisma.auditJob.update({
         where: { id: auditJobId },
         data: { status: "RUNNING", startedAt: new Date(), stageName: "fetching" },
       });
 
       mkdirSync(repoDir, { recursive: true });
-      mkdirSync(artifactsDir, { recursive: true });
-
-      // ── Stage: Fetch repo ──
       await updateProgress(auditJobId, "fetching", 2);
 
       if (repoSource === "url" && repoUrl) {
-        await cloneRepo(repoUrl, repoDir);
-      } else if (repoSource === "upload") {
-        // Upload stored in STORAGE_DIR/uploads/<auditJobId>.zip
-        const zipPath = path.join(STORAGE_DIR, "uploads", `${auditJobId}.zip`);
-        if (!existsSync(zipPath)) {
-          throw new Error("Upload zip not found. Please re-upload.");
-        }
-        execSync(`unzip -o -q "${zipPath}" -d "${repoDir}"`, { timeout: 30_000 });
-        // If zip contains a single top-level directory, move contents up
-        const entries = readdirSync(repoDir);
-        if (entries.length === 1) {
-          const singleDir = path.join(repoDir, entries[0]);
-          if (statSync(singleDir).isDirectory()) {
-            execSync(`mv "${singleDir}"/* "${repoDir}"/ 2>/dev/null || true`, { shell: "/bin/bash" });
-            rmSync(singleDir, { recursive: true, force: true });
-          }
-        }
+        cloneRepo(repoUrl, repoDir);
       } else {
-        throw new Error(`Invalid repo source: ${repoSource}`);
+        throw new Error(`Only Git URL source is supported. Got: ${repoSource}`);
       }
 
-      // Validate repo size
-      const sizeBytes = getDirSize(repoDir);
+      const sizeBytes = getDirSizeRecursive(repoDir);
       if (sizeBytes > MAX_REPO_SIZE_MB * 1024 * 1024) {
         throw new Error(`Repository exceeds ${MAX_REPO_SIZE_MB}MB size limit.`);
       }
 
-      // ── Run audit pipeline ──
       const result = await runPipeline({
         repoPath: repoDir,
         mode: mode as "SCAN" | "PROVE" | "FIX_PLAN",
@@ -81,7 +57,7 @@ const worker = new Worker<AuditJobData>(
         },
       });
 
-      // ── Store findings ──
+      // ── Store findings in DB ──
       await updateProgress(auditJobId, "storing_results", 96);
 
       for (const finding of result.findings) {
@@ -94,77 +70,63 @@ const worker = new Worker<AuditJobData>(
             title: finding.title,
             location: finding.location as any,
             confidence: finding.confidence,
-            hypothesis: finding.hypothesis || null,
+            hypothesis: finding.hypothesis || undefined,
             proofStatus: finding.proofPlan ? "PLANNED" : "PENDING",
-            proofPlan: finding.proofPlan as any || null,
-            proofArtifacts: null,
-            fixPlan: finding.fixPlan as any || null,
-            blastRadius: finding.blastRadius as any || null,
+            proofPlan: finding.proofPlan as any || undefined,
+            fixPlan: finding.fixPlan as any || undefined,
+            blastRadius: finding.blastRadius as any || undefined,
           },
         });
       }
 
-      // ── Store artifacts ──
-      const mdReportPath = path.join(artifactsDir, "report.md");
-      writeFileSync(mdReportPath, result.reportMarkdown, "utf-8");
+      // ── Upload artifacts to R2 ──
+      await updateProgress(auditJobId, "uploading_artifacts", 97);
 
-      const jsonReportPath = path.join(artifactsDir, "report.json");
-      writeFileSync(jsonReportPath, JSON.stringify(result.reportJson, null, 2), "utf-8");
-
+      const mdResult = await storage.putArtifact(
+        auditJobId, "report.md", result.reportMarkdown, "text/markdown"
+      );
       await prisma.artifact.create({
         data: {
-          auditJobId,
-          type: "REPORT",
-          name: "report.md",
-          path: mdReportPath,
-          metadata: {},
-          sizeBytes: Buffer.byteLength(result.reportMarkdown),
+          auditJobId, type: "REPORT", name: "report.md",
+          objectKey: mdResult.objectKey, contentType: "text/markdown",
+          metadata: {}, sizeBytes: mdResult.sizeBytes,
         },
       });
 
+      const jsonBody = JSON.stringify(result.reportJson, null, 2);
+      const jsonResult = await storage.putArtifact(
+        auditJobId, "report.json", jsonBody, "application/json"
+      );
       await prisma.artifact.create({
         data: {
-          auditJobId,
-          type: "REPORT",
-          name: "report.json",
-          path: jsonReportPath,
-          metadata: {},
-          sizeBytes: Buffer.byteLength(JSON.stringify(result.reportJson)),
+          auditJobId, type: "REPORT", name: "report.json",
+          objectKey: jsonResult.objectKey, contentType: "application/json",
+          metadata: {}, sizeBytes: jsonResult.sizeBytes,
         },
       });
 
-      // Store graph data as artifacts
       for (const graph of result.graphs) {
-        const graphPath = path.join(artifactsDir, `graph-${graph.name.toLowerCase().replace(/\s+/g, "-")}.json`);
-        const graphJson = JSON.stringify(graph, null, 2);
-        writeFileSync(graphPath, graphJson, "utf-8");
-
+        const slug = graph.name.toLowerCase().replace(/\s+/g, "-");
+        const graphBody = JSON.stringify(graph, null, 2);
+        const graphResult = await storage.putArtifact(
+          auditJobId, `graph-${slug}.json`, graphBody, "application/json"
+        );
         await prisma.artifact.create({
           data: {
-            auditJobId,
-            type: "GRAPH",
-            name: graph.name,
-            path: graphPath,
-            metadata: {
-              nodeCount: graph.nodes.length,
-              edgeCount: graph.edges.length,
-              nodes: graph.nodes,
-              edges: graph.edges,
-            },
-            sizeBytes: Buffer.byteLength(graphJson),
+            auditJobId, type: "GRAPH", name: graph.name,
+            objectKey: graphResult.objectKey, contentType: "application/json",
+            metadata: { nodeCount: graph.nodes.length, edgeCount: graph.edges.length },
+            sizeBytes: graphResult.sizeBytes,
           },
         });
       }
 
-      // ── Store summary ──
-      const summaryJson = JSON.stringify(result.summary);
+      // ── Mark complete ──
       await prisma.auditJob.update({
         where: { id: auditJobId },
         data: {
-          status: "SUCCEEDED",
-          finishedAt: new Date(),
-          progress: 100,
-          stageName: "complete",
+          status: "SUCCEEDED", finishedAt: new Date(),
+          progress: 100, stageName: "complete",
           summary: result.summary as any,
         },
       });
@@ -174,15 +136,10 @@ const worker = new Worker<AuditJobData>(
       console.error(`[worker] audit ${auditJobId} failed:`, err.message);
       await prisma.auditJob.update({
         where: { id: auditJobId },
-        data: {
-          status: "FAILED",
-          finishedAt: new Date(),
-          error: err.message || "Unknown error",
-        },
+        data: { status: "FAILED", finishedAt: new Date(), error: err.message || "Unknown error" },
       });
       throw err;
     } finally {
-      // Cleanup cloned repo (keep artifacts)
       if (existsSync(repoDir)) {
         rmSync(repoDir, { recursive: true, force: true });
       }
@@ -207,8 +164,6 @@ worker.on("error", (err) => {
   console.error("[worker] worker error:", err);
 });
 
-// ── Helpers ──
-
 async function updateProgress(auditJobId: string, stage: string, pct: number) {
   await prisma.auditJob.update({
     where: { id: auditJobId },
@@ -217,16 +172,10 @@ async function updateProgress(auditJobId: string, stage: string, pct: number) {
 }
 
 function cloneRepo(url: string, dest: string): void {
-  // Validate URL to prevent command injection
-  const sanitized = url.replace(/[^a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]/g, "");
-  if (sanitized !== url) {
-    throw new Error("Invalid characters in repository URL.");
+  if (!/^https:\/\//i.test(url)) {
+    throw new Error("Only HTTPS repository URLs are supported.");
   }
-
-  // Block non-http(s) protocols
-  if (!/^https?:\/\//i.test(url)) {
-    throw new Error("Only HTTP(S) repository URLs are supported.");
-  }
+  try { new URL(url); } catch { throw new Error("Invalid repository URL."); }
 
   const githubToken = process.env.GITHUB_TOKEN;
   let cloneUrl = url;
@@ -236,31 +185,29 @@ function cloneRepo(url: string, dest: string): void {
 
   try {
     execSync(
-      `git clone --depth=1 --single-branch "${cloneUrl}" "${dest}"`,
-      {
-        timeout: CLONE_TIMEOUT_MS,
-        stdio: "pipe",
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      }
+      `git clone --depth=1 --single-branch -- ${JSON.stringify(cloneUrl)} ${JSON.stringify(dest)}`,
+      { timeout: CLONE_TIMEOUT_MS, stdio: "pipe", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
     );
   } catch (err: any) {
-    if (err.killed) {
-      throw new Error("Repository clone timed out.");
+    if (err.killed) throw new Error("Repository clone timed out.");
+    const msg = (err.stderr?.toString() || err.message || "").replace(/https:\/\/[^@]+@/g, "https://***@");
+    throw new Error(`Failed to clone repository: ${msg}`);
+  }
+}
+
+function getDirSizeRecursive(dir: string): number {
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += getDirSizeRecursive(full);
+    } else {
+      try { total += statSync(full).size; } catch {}
     }
-    throw new Error(`Failed to clone repository: ${err.stderr?.toString() || err.message}`);
   }
+  return total;
 }
 
-function getDirSize(dir: string): number {
-  try {
-    const output = execSync(`du -sb "${dir}" | cut -f1`, { encoding: "utf-8" });
-    return parseInt(output.trim(), 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-// Graceful shutdown
 process.on("SIGTERM", async () => {
   console.log("[worker] shutting down...");
   await worker.close();
