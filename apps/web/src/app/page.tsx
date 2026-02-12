@@ -69,7 +69,7 @@ function TerminalBlock() {
         <span className="ml-2 text-[10px] mono text-[var(--fg-dim)]">solaudit-agent</span>
       </div>
       <div className="p-4 h-[320px] overflow-hidden">
-        {lines.map((line, i) => (
+        {lines.filter(Boolean).map((line, i) => (
           <div key={i} className="mono text-xs leading-relaxed count-in" style={{animationDelay: `${i * 50}ms`}}>
             {line.startsWith("$") ? (
               <span className="text-[var(--fg)]">{line}</span>

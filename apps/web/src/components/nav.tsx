@@ -9,7 +9,7 @@ const links = [
 ];
 
 export function Nav() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
 
   return (
     <header className="border-b border-[var(--border)] bg-[var(--bg)]">
