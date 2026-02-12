@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "cd ../.. && pnpm run build:packages && cd apps/web && next build",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "vercel-build": "cd ../.. && pnpm run build:packages && cd apps/web && next build"

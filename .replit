@@ -1,0 +1,13 @@
+run = "pnpm install && pnpm run build:packages && pnpm run build:worker && cd apps/web && pnpm run build && cd ../.. && node start.js"
+entrypoint = "start.js"
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+run = ["sh", "-c", "node start.js"]
+build = ["sh", "-c", "pnpm install && pnpm run build:packages && pnpm run build:worker && cd apps/web && pnpm run build"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80
