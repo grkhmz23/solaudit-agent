@@ -1,10 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
-  transpilePackages: ["@solaudit/db", "@solaudit/engine", "@solaudit/queue"],
+  transpilePackages: ["@solaudit/db", "@solaudit/engine", "@solaudit/queue", "@solaudit/storage"],
   experimental: {
     serverComponentsExternalPackages: ["@prisma/client", "bullmq", "ioredis"],
   },
 };
-
 module.exports = nextConfig;
