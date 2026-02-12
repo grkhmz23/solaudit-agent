@@ -2,11 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const API_KEY =
-  typeof window !== "undefined"
-    ? localStorage.getItem("solaudit_api_key") ?? ""
-    : "";
-
 export function getApiKey(): string {
   if (typeof window === "undefined") return "";
   return localStorage.getItem("solaudit_api_key") ?? "";
@@ -21,7 +16,6 @@ function headers(): HeadersInit {
   return key ? { "x-api-key": key, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
 }
 
-// Generic fetch with error handling
 async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...opts, headers: { ...headers(), ...opts?.headers } });
   if (!res.ok) {
@@ -31,7 +25,8 @@ async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// ── Audits List ──
+// ── Types ──
+
 export interface AuditListItem {
   id: string;
   createdAt: string;
@@ -46,35 +41,6 @@ export interface AuditListItem {
   _count: { findings: number; artifacts: number };
 }
 
-export function useAudits(pollMs = 5000) {
-  const [audits, setAudits] = useState<AuditListItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetch_ = useCallback(async () => {
-    try {
-      const data = await apiFetch<{ audits: AuditListItem[]; total: number }>("/api/audits?limit=50");
-      setAudits(data.audits);
-      setTotal(data.total);
-      setError(null);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetch_();
-    const interval = setInterval(fetch_, pollMs);
-    return () => clearInterval(interval);
-  }, [fetch_, pollMs]);
-
-  return { audits, total, loading, error, refetch: fetch_ };
-}
-
-// ── Single Audit Detail ──
 export interface AuditDetail {
   id: string;
   createdAt: string;
@@ -113,9 +79,40 @@ export interface Artifact {
   id: string;
   type: string;
   name: string;
-  path: string;
+  contentType: string;
   metadata: any;
   sizeBytes: number | null;
+  createdAt: string;
+}
+
+// ── Hooks ──
+
+export function useAudits(pollMs = 5000) {
+  const [audits, setAudits] = useState<AuditListItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetch_ = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ audits: AuditListItem[]; total: number }>("/api/audits?limit=50");
+      setAudits(data.audits);
+      setTotal(data.total);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch_();
+    const interval = setInterval(fetch_, pollMs);
+    return () => clearInterval(interval);
+  }, [fetch_, pollMs]);
+
+  return { audits, total, loading, error, refetch: fetch_ };
 }
 
 export function useAudit(id: string, pollMs = 3000) {
@@ -129,7 +126,6 @@ export function useAudit(id: string, pollMs = 3000) {
       const data = await apiFetch<{ audit: AuditDetail }>(`/api/audits/${id}`);
       setAudit(data.audit);
       setError(null);
-      // Stop polling when job is terminal
       if (["SUCCEEDED", "FAILED"].includes(data.audit.status)) {
         shouldPoll.current = false;
       }
@@ -152,43 +148,20 @@ export function useAudit(id: string, pollMs = 3000) {
   return { audit, loading, error, refetch: fetch_ };
 }
 
-// ── Create Audit ──
-export async function createAudit(data: {
-  repoUrl?: string;
-  mode: string;
-}): Promise<{ audit: { id: string } }> {
-  return apiFetch("/api/audits", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
+export async function createAudit(data: { repoUrl?: string; mode: string }): Promise<{ audit: { id: string } }> {
+  return apiFetch("/api/audits", { method: "POST", body: JSON.stringify(data) });
 }
 
-// ── Queue Health ──
-export async function fetchQueueHealth(): Promise<{
-  redis: string;
-  database: string;
-  timestamp: string;
-}> {
+export async function getArtifactUrl(artifactId: string): Promise<{ url: string; name: string; contentType: string }> {
+  return apiFetch(`/api/artifacts/${artifactId}/url`);
+}
+
+export async function fetchQueueHealth(): Promise<{ redis: string; database: string; timestamp: string }> {
   const data = await apiFetch<{ status: string; checks: Record<string, string> }>("/api/health");
-  return {
-    redis: data.checks.redis ?? "unknown",
-    database: data.checks.database ?? "unknown",
-    timestamp: new Date().toISOString(),
-  };
+  return { redis: data.checks?.redis ?? "unknown", database: data.checks?.database ?? "unknown", timestamp: new Date().toISOString() };
 }
 
-// ── Queue Stats ──
-export async function fetchQueueStats(): Promise<{
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-}> {
+export async function fetchQueueStats(): Promise<{ waiting: number; active: number; completed: number; failed: number }> {
   const data = await apiFetch<{ counts: Record<string, number> }>("/api/queue");
-  return {
-    waiting: data.counts?.waiting ?? 0,
-    active: data.counts?.active ?? 0,
-    completed: data.counts?.completed ?? 0,
-    failed: data.counts?.failed ?? 0,
-  };
+  return { waiting: data.counts?.waiting ?? 0, active: data.counts?.active ?? 0, completed: data.counts?.completed ?? 0, failed: data.counts?.failed ?? 0 };
 }

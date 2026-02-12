@@ -3,8 +3,8 @@ import "./globals.css";
 import { Nav } from "@/components/nav";
 
 export const metadata: Metadata = {
-  title: "SolAudit Agent",
-  description: "Automated Solana program security auditing with proof generation",
+  title: "solaudit",
+  description: "Automated security auditing for Solana programs",
 };
 
 export default function RootLayout({
@@ -14,9 +14,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      </head>
       <body className="min-h-screen antialiased">
+        <div className="scan-line" />
         <Nav />
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
           {children}
         </main>
       </body>

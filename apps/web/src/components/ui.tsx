@@ -1,42 +1,33 @@
 "use client";
 
-const severityColors: Record<string, string> = {
-  CRITICAL: "bg-red-900/50 text-red-300 border-red-800",
-  HIGH: "bg-orange-900/50 text-orange-300 border-orange-800",
-  MEDIUM: "bg-yellow-900/50 text-yellow-300 border-yellow-800",
-  LOW: "bg-blue-900/50 text-blue-300 border-blue-800",
-  INFO: "bg-gray-800/50 text-gray-300 border-gray-700",
+const severityMap: Record<string, string> = {
+  CRITICAL: "badge-critical",
+  HIGH: "badge-high",
+  MEDIUM: "badge-medium",
+  LOW: "badge-low",
+  INFO: "badge-info",
 };
 
-const statusColors: Record<string, string> = {
-  QUEUED: "bg-gray-800/50 text-gray-300 border-gray-700",
-  RUNNING: "bg-blue-900/50 text-blue-300 border-blue-800",
-  SUCCEEDED: "bg-green-900/50 text-green-300 border-green-800",
-  FAILED: "bg-red-900/50 text-red-300 border-red-800",
+const statusMap: Record<string, { cls: string; dot?: string }> = {
+  QUEUED: { cls: "bg-zinc-900 text-zinc-400 border-zinc-800" },
+  RUNNING: { cls: "bg-blue-950/80 text-blue-400 border-blue-900", dot: "bg-blue-400" },
+  SUCCEEDED: { cls: "bg-emerald-950/80 text-emerald-400 border-emerald-900" },
+  FAILED: { cls: "bg-red-950/80 text-red-400 border-red-900" },
 };
 
 export function SeverityBadge({ severity }: { severity: string }) {
   return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${
-        severityColors[severity] ?? severityColors.INFO
-      }`}
-    >
+    <span className={`badge ${severityMap[severity] ?? "badge-info"}`}>
       {severity}
     </span>
   );
 }
 
 export function StatusBadge({ status }: { status: string }) {
+  const s = statusMap[status] ?? statusMap.QUEUED;
   return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${
-        statusColors[status] ?? statusColors.QUEUED
-      }`}
-    >
-      {status === "RUNNING" && (
-        <span className="w-1.5 h-1.5 bg-blue-400 rounded-full mr-1.5 animate-pulse" />
-      )}
+    <span className={`badge ${s.cls}`}>
+      {s.dot && <span className={`w-1.5 h-1.5 rounded-full ${s.dot} mr-1.5 animate-pulse`} />}
       {status}
     </span>
   );
@@ -45,13 +36,13 @@ export function StatusBadge({ status }: { status: string }) {
 export function ProgressBar({ value, stage }: { value: number; stage?: string | null }) {
   return (
     <div className="w-full">
-      <div className="flex justify-between text-xs text-gray-400 mb-1">
+      <div className="flex justify-between text-[10px] mono text-[var(--fg-dim)] mb-1">
         <span>{stage ?? "..."}</span>
         <span>{value}%</span>
       </div>
-      <div className="w-full bg-gray-800 rounded-full h-1.5">
+      <div className="w-full bg-[var(--border)] rounded-full h-1">
         <div
-          className="bg-green-500 h-1.5 rounded-full transition-all duration-500"
+          className={`h-1 rounded-full transition-all duration-700 ${value < 100 ? "progress-shimmer" : "bg-[var(--accent)]"}`}
           style={{ width: `${Math.min(value, 100)}%` }}
         />
       </div>
@@ -67,7 +58,7 @@ export function Card({
   className?: string;
 }) {
   return (
-    <div className={`bg-[var(--card)] border border-[var(--border)] rounded-lg p-5 ${className}`}>
+    <div className={`bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg p-4 ${className}`}>
       {children}
     </div>
   );
@@ -78,7 +69,7 @@ export function repoShortName(url: string): string {
     const u = new URL(url);
     return u.pathname.replace(/^\//, "").replace(/\.git$/, "");
   } catch {
-    return url.length > 60 ? url.slice(0, 57) + "..." : url;
+    return url && url.length > 60 ? url.slice(0, 57) + "..." : url || "unknown";
   }
 }
 
@@ -86,12 +77,11 @@ export function timeAgo(dateStr: string): string {
   const now = Date.now();
   const date = new Date(dateStr).getTime();
   const seconds = Math.floor((now - date) / 1000);
-
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return `${days}d`;
 }

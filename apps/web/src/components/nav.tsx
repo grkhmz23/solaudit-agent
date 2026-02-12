@@ -1,43 +1,54 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { clsx } from "clsx";
 
 const links = [
-  { href: "/", label: "Home" },
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/audit/new", label: "New Audit" },
-  { href: "/settings", label: "Settings" },
+  { href: "/dashboard", label: "audits" },
+  { href: "/audit/new", label: "new" },
+  { href: "/settings", label: "config" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
 
   return (
-    <header className="border-b border-[var(--border)] bg-[var(--card)]">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center h-14 gap-8">
-        <Link href="/" className="flex items-center gap-2 font-bold text-lg">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="text-green-500">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
-          </svg>
-          <span className="text-green-400">SolAudit</span>
+    <header className="border-b border-[var(--border)] bg-[var(--bg)]">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 flex items-center h-12 gap-6">
+        <Link href="/" className="flex items-center gap-2 group">
+          <div className="relative w-2 h-2 rounded-full bg-[var(--accent)] glow-dot" />
+          <span className="mono text-sm font-semibold text-[var(--accent)] tracking-tight">
+            solaudit
+          </span>
         </Link>
+
+        <div className="h-4 w-px bg-[var(--border)]" />
+
         <nav className="flex gap-1">
-          {links.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className={clsx(
-                "px-3 py-1.5 rounded text-sm transition-colors",
-                pathname === link.href
-                  ? "bg-green-900/40 text-green-300"
-                  : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
-              )}
-            >
-              {link.label}
-            </Link>
-          ))}
+          {links.map((link) => {
+            const active = pathname === link.href || 
+              (link.href === "/dashboard" && pathname.startsWith("/audit/") && pathname !== "/audit/new");
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={`px-2.5 py-1 rounded text-xs mono transition-colors ${
+                  active
+                    ? "text-[var(--fg)] bg-white/[0.04]"
+                    : "text-[var(--fg-muted)] hover:text-[var(--fg-dim)] hover:text-[var(--fg)]"
+                }`}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
         </nav>
+
+        <div className="flex-1" />
+
+        <div className="flex items-center gap-2 text-[10px] mono text-[var(--fg-dim)]">
+          <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] opacity-60" />
+          v1.0
+        </div>
       </div>
     </header>
   );

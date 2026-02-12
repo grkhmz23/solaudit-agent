@@ -2,238 +2,165 @@
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
-import { useAudit, type Finding, type Artifact } from "@/lib/hooks";
-import {
-  StatusBadge,
-  SeverityBadge,
-  ProgressBar,
-  Card,
-  repoShortName,
-} from "@/components/ui";
-import { GraphViewer } from "@/components/graph-viewer";
+import { useAudit, getArtifactUrl, type Finding, type Artifact } from "@/lib/hooks";
+import { StatusBadge, SeverityBadge, ProgressBar, Card, repoShortName } from "@/components/ui";
 import { FindingDetail } from "@/components/finding-detail";
+import { GraphViewer } from "@/components/graph-viewer";
 
-const tabs = ["Summary", "Findings", "Graphs"] as const;
-type Tab = (typeof tabs)[number];
+type Tab = "summary" | "findings" | "graphs" | "artifacts";
 
 export default function AuditDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { audit, loading, error } = useAudit(id);
-  const [activeTab, setActiveTab] = useState<Tab>("Summary");
+  const [tab, setTab] = useState<Tab>("summary");
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
 
   if (loading) {
     return (
-      <Card>
-        <p className="text-gray-400 text-center py-16">Loading audit...</p>
-      </Card>
+      <div className="text-center py-20">
+        <div className="inline-block w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+        <p className="text-[var(--fg-dim)] text-xs mt-3 mono">loading audit...</p>
+      </div>
     );
   }
 
   if (error || !audit) {
     return (
-      <Card className="border-red-800 bg-red-900/20">
-        <p className="text-red-300">{error ?? "Audit not found"}</p>
+      <Card className="border-red-900/50">
+        <p className="text-red-400 text-xs mono">{error ?? "Audit not found"}</p>
       </Card>
     );
   }
 
   const isRunning = audit.status === "RUNNING";
   const graphArtifacts = audit.artifacts.filter((a) => a.type === "GRAPH");
+  const reportArtifacts = audit.artifacts.filter((a) => a.type === "REPORT");
 
   const severityCounts: Record<string, number> = {};
   for (const f of audit.findings) {
     severityCounts[f.severity] = (severityCounts[f.severity] || 0) + 1;
   }
 
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: "summary", label: "summary" },
+    { id: "findings", label: "findings", count: audit.findings.length },
+    { id: "graphs", label: "graphs", count: graphArtifacts.length },
+    { id: "artifacts", label: "artifacts", count: audit.artifacts.length },
+  ];
+
   return (
     <div>
       {/* Header */}
       <div className="mb-6">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-2 mb-2">
           <StatusBadge status={audit.status} />
-          <span className="text-xs px-2 py-0.5 bg-gray-800 rounded text-gray-300">
-            {audit.mode}
-          </span>
+          <span className="badge badge-info">{audit.mode}</span>
         </div>
-        <h1 className="text-xl font-bold font-mono">
-          {audit.repoSource === "url"
-            ? repoShortName(audit.repoUrl)
-            : "Uploaded archive"}
+        <h1 className="text-lg font-semibold mono">
+          {audit.repoSource === "url" ? repoShortName(audit.repoUrl) : "uploaded archive"}
         </h1>
-        <p className="text-xs text-gray-500 mt-1">ID: {audit.id}</p>
+        <p className="mono text-[10px] text-[var(--fg-dim)] mt-1">{audit.id}</p>
 
         {isRunning && audit.progress != null && (
-          <div className="mt-4 max-w-lg">
+          <div className="mt-4 max-w-md">
             <ProgressBar value={audit.progress} stage={audit.stageName} />
           </div>
         )}
 
         {audit.status === "FAILED" && audit.error && (
-          <Card className="mt-4 border-red-800 bg-red-900/20">
-            <p className="text-red-300 text-sm">{audit.error}</p>
+          <Card className="mt-4 border-red-900/50">
+            <p className="text-red-400 text-xs mono">{audit.error}</p>
           </Card>
         )}
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[var(--border)] mb-6">
-        {tabs.map((tab) => (
+      <div className="flex gap-px border-b border-[var(--border)] mb-6">
+        {tabs.map((t) => (
           <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab);
-              setSelectedFinding(null);
-            }}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              activeTab === tab
-                ? "border-green-500 text-green-300"
-                : "border-transparent text-gray-400 hover:text-gray-200"
+            key={t.id}
+            onClick={() => { setTab(t.id); setSelectedFinding(null); }}
+            className={`px-3 py-2 text-xs mono transition-colors border-b -mb-px ${
+              tab === t.id
+                ? "border-[var(--accent)] text-[var(--accent)]"
+                : "border-transparent text-[var(--fg-dim)] hover:text-[var(--fg-muted)]"
             }`}
           >
-            {tab}
-            {tab === "Findings" && audit.findings.length > 0 && (
-              <span className="ml-1.5 text-xs bg-gray-800 px-1.5 py-0.5 rounded">
-                {audit.findings.length}
+            {t.label}
+            {t.count != null && t.count > 0 && (
+              <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg)] text-[var(--fg-dim)]">
+                {t.count}
               </span>
             )}
           </button>
         ))}
       </div>
 
-      {/* Tab Content */}
-      {activeTab === "Summary" && (
-        <SummaryTab audit={audit} severityCounts={severityCounts} />
-      )}
-      {activeTab === "Findings" && (
-        <FindingsTab
-          findings={audit.findings}
-          selected={selectedFinding}
-          onSelect={setSelectedFinding}
-        />
-      )}
-      {activeTab === "Graphs" && <GraphsTab artifacts={graphArtifacts} />}
+      {/* Content */}
+      {tab === "summary" && <SummaryTab audit={audit} counts={severityCounts} />}
+      {tab === "findings" && <FindingsTab findings={audit.findings} selected={selectedFinding} onSelect={setSelectedFinding} />}
+      {tab === "graphs" && <GraphsTab artifacts={graphArtifacts} />}
+      {tab === "artifacts" && <ArtifactsTab artifacts={audit.artifacts} />}
     </div>
   );
 }
 
-// ── Summary Tab ──
-function SummaryTab({
-  audit,
-  severityCounts,
-}: {
-  audit: any;
-  severityCounts: Record<string, number>;
-}) {
-  const summary = audit.summary;
-
+function SummaryTab({ audit, counts }: { audit: any; counts: Record<string, number> }) {
+  const s = audit.summary;
   return (
     <div className="space-y-4">
-      {summary && (
+      {s && (
         <Card>
-          <div className="flex items-center gap-3 mb-4">
-            <div
-              className={`w-3 h-3 rounded-full ${
-                summary.shipReady ? "bg-green-500" : "bg-red-500"
-              }`}
-            />
-            <h2 className="text-lg font-bold">
-              {summary.shipReady ? "SHIP READY" : "DO NOT SHIP"}
-            </h2>
+          <div className="flex items-center gap-2 mb-4">
+            <div className={`w-2 h-2 rounded-full ${s.shipReady ? "bg-[var(--accent)]" : "bg-red-400"}`} />
+            <span className="text-sm font-semibold mono">
+              {s.shipReady ? "SHIP" : "DO NOT SHIP"}
+            </span>
           </div>
-          <p className="text-gray-300 text-sm mb-4">
-            {summary.recommendation}
-          </p>
-
-          <div className="grid grid-cols-5 gap-2">
-            {(
-              ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] as const
-            ).map((sev) => (
-              <div
-                key={sev}
-                className="text-center p-3 rounded bg-gray-900 border border-gray-800"
-              >
-                <p className="text-2xl font-bold">
-                  {severityCounts[sev] ?? 0}
-                </p>
+          <p className="text-xs text-[var(--fg-muted)] mb-4">{s.recommendation}</p>
+          <div className="grid grid-cols-5 gap-1.5">
+            {(["CRITICAL","HIGH","MEDIUM","LOW","INFO"] as const).map((sev) => (
+              <div key={sev} className="text-center p-2 rounded bg-[var(--bg)] border border-[var(--border)]">
+                <p className="text-lg font-bold mono">{counts[sev] ?? 0}</p>
                 <SeverityBadge severity={sev} />
               </div>
             ))}
           </div>
         </Card>
       )}
-
       <Card>
-        <h3 className="text-sm font-medium text-gray-300 mb-3">Details</h3>
-        <dl className="grid grid-cols-2 gap-y-2 text-sm">
-          <dt className="text-gray-500">Status</dt>
-          <dd>
-            <StatusBadge status={audit.status} />
-          </dd>
-          <dt className="text-gray-500">Mode</dt>
-          <dd className="text-gray-300">{audit.mode}</dd>
-          <dt className="text-gray-500">Created</dt>
-          <dd className="text-gray-300">
-            {new Date(audit.createdAt).toLocaleString()}
-          </dd>
-          {audit.startedAt && (
-            <>
-              <dt className="text-gray-500">Started</dt>
-              <dd className="text-gray-300">
-                {new Date(audit.startedAt).toLocaleString()}
-              </dd>
-            </>
-          )}
-          {audit.finishedAt && (
-            <>
-              <dt className="text-gray-500">Finished</dt>
-              <dd className="text-gray-300">
-                {new Date(audit.finishedAt).toLocaleString()}
-              </dd>
-            </>
-          )}
-          {summary && (
-            <>
-              <dt className="text-gray-500">Framework</dt>
-              <dd className="text-gray-300">{summary.framework}</dd>
-              <dt className="text-gray-500">Instructions</dt>
-              <dd className="text-gray-300">{summary.instructionCount}</dd>
-              <dt className="text-gray-500">Account Structs</dt>
-              <dd className="text-gray-300">{summary.accountStructCount}</dd>
-            </>
-          )}
-          <dt className="text-gray-500">Artifacts</dt>
-          <dd className="text-gray-300">{audit.artifacts.length}</dd>
+        <span className="text-xs mono text-[var(--fg-muted)] block mb-3">details</span>
+        <dl className="grid grid-cols-2 gap-y-2 text-xs">
+          <dt className="text-[var(--fg-dim)] mono">status</dt>
+          <dd><StatusBadge status={audit.status} /></dd>
+          <dt className="text-[var(--fg-dim)] mono">mode</dt>
+          <dd className="text-[var(--fg-muted)]">{audit.mode}</dd>
+          <dt className="text-[var(--fg-dim)] mono">created</dt>
+          <dd className="text-[var(--fg-muted)] mono">{new Date(audit.createdAt).toLocaleString()}</dd>
+          {audit.startedAt && (<><dt className="text-[var(--fg-dim)] mono">started</dt><dd className="text-[var(--fg-muted)] mono">{new Date(audit.startedAt).toLocaleString()}</dd></>)}
+          {audit.finishedAt && (<><dt className="text-[var(--fg-dim)] mono">finished</dt><dd className="text-[var(--fg-muted)] mono">{new Date(audit.finishedAt).toLocaleString()}</dd></>)}
+          {s && (<>
+            <dt className="text-[var(--fg-dim)] mono">framework</dt><dd className="text-[var(--fg-muted)]">{s.framework}</dd>
+            <dt className="text-[var(--fg-dim)] mono">instructions</dt><dd className="text-[var(--fg-muted)]">{s.instructionCount}</dd>
+            <dt className="text-[var(--fg-dim)] mono">account structs</dt><dd className="text-[var(--fg-muted)]">{s.accountStructCount}</dd>
+          </>)}
+          <dt className="text-[var(--fg-dim)] mono">artifacts</dt>
+          <dd className="text-[var(--fg-muted)]">{audit.artifacts.length}</dd>
         </dl>
       </Card>
     </div>
   );
 }
 
-// ── Findings Tab ──
-function FindingsTab({
-  findings,
-  selected,
-  onSelect,
-}: {
-  findings: Finding[];
-  selected: Finding | null;
-  onSelect: (f: Finding | null) => void;
-}) {
-  const [filterSeverity, setFilterSeverity] = useState<string>("ALL");
-  const filtered =
-    filterSeverity === "ALL"
-      ? findings
-      : findings.filter((f) => f.severity === filterSeverity);
+function FindingsTab({ findings, selected, onSelect }: { findings: Finding[]; selected: Finding | null; onSelect: (f: Finding | null) => void }) {
+  const [filter, setFilter] = useState("ALL");
+  const filtered = filter === "ALL" ? findings : findings.filter((f) => f.severity === filter);
 
   if (selected) {
     return (
       <div>
-        <button
-          onClick={() => onSelect(null)}
-          className="text-sm text-green-400 hover:text-green-300 mb-4 flex items-center gap-1"
-        >
-          &#8592; Back to findings
+        <button onClick={() => onSelect(null)} className="text-xs mono text-[var(--accent)] hover:brightness-110 mb-4 flex items-center gap-1">
+          &#8592; back
         </button>
         <FindingDetail finding={selected} />
       </div>
@@ -242,62 +169,42 @@ function FindingsTab({
 
   return (
     <div>
-      <div className="flex gap-2 mb-4 flex-wrap">
-        {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map((s) => (
+      <div className="flex gap-1.5 mb-4 flex-wrap">
+        {["ALL","CRITICAL","HIGH","MEDIUM","LOW","INFO"].map((s) => (
           <button
             key={s}
-            onClick={() => setFilterSeverity(s)}
-            className={`px-3 py-1 text-xs rounded border transition-colors ${
-              filterSeverity === s
-                ? "border-green-700 bg-green-900/30 text-green-300"
-                : "border-gray-700 text-gray-400 hover:border-gray-500"
+            onClick={() => setFilter(s)}
+            className={`px-2.5 py-1 text-[11px] mono rounded border transition-colors ${
+              filter === s
+                ? "border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]"
+                : "border-[var(--border)] text-[var(--fg-dim)] hover:text-[var(--fg-muted)]"
             }`}
           >
-            {s}
-            {s !== "ALL" && (
-              <span className="ml-1">
-                ({findings.filter((f) => f.severity === s).length})
-              </span>
-            )}
+            {s}{s !== "ALL" && ` (${findings.filter((f) => f.severity === s).length})`}
           </button>
         ))}
       </div>
-
       {filtered.length === 0 ? (
-        <Card>
-          <p className="text-gray-400 text-center py-8">
-            No findings match the current filter.
-          </p>
-        </Card>
+        <Card><p className="text-[var(--fg-dim)] text-center text-xs mono py-8">no findings match filter</p></Card>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {filtered.map((f) => (
-            <Card
+            <div
               key={f.id}
-              className="cursor-pointer hover:border-green-800/50 transition-colors"
+              onClick={() => onSelect(f)}
+              className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg px-4 py-3 card-hover cursor-pointer"
             >
-              <button
-                className="w-full text-left"
-                onClick={() => onSelect(f)}
-              >
-                <div className="flex items-center gap-3 mb-1">
-                  <SeverityBadge severity={f.severity} />
-                  <span className="text-xs text-gray-500 font-mono">
-                    Class {f.classId}
-                  </span>
-                  <span className="text-xs text-gray-500">
-                    {(f.confidence * 100).toFixed(0)}% confidence
-                  </span>
-                </div>
-                <p className="text-sm font-medium text-gray-200">{f.title}</p>
-                <p className="text-xs text-gray-500 font-mono mt-1">
-                  {f.location.file}:{f.location.line}
-                  {f.location.instruction
-                    ? ` @ ${f.location.instruction}`
-                    : ""}
-                </p>
-              </button>
-            </Card>
+              <div className="flex items-center gap-2 mb-1">
+                <SeverityBadge severity={f.severity} />
+                <span className="mono text-[10px] text-[var(--fg-dim)]">#{f.classId}</span>
+                <span className="mono text-[10px] text-[var(--fg-dim)]">{(f.confidence * 100).toFixed(0)}%</span>
+              </div>
+              <p className="text-xs text-[var(--fg)]">{f.title}</p>
+              <p className="mono text-[10px] text-[var(--fg-dim)] mt-1">
+                {f.location.file}:{f.location.line}
+                {f.location.instruction ? ` @ ${f.location.instruction}` : ""}
+              </p>
+            </div>
           ))}
         </div>
       )}
@@ -305,49 +212,73 @@ function FindingsTab({
   );
 }
 
-// ── Graphs Tab ──
 function GraphsTab({ artifacts }: { artifacts: Artifact[] }) {
-  const [selectedGraph, setSelectedGraph] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(null);
 
   if (artifacts.length === 0) {
-    return (
-      <Card>
-        <p className="text-gray-400 text-center py-8">
-          No graph data available. Graphs are generated when the audit
-          completes.
-        </p>
-      </Card>
-    );
+    return <Card><p className="text-[var(--fg-dim)] text-center text-xs mono py-8">no graphs available</p></Card>;
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-1.5 flex-wrap">
         {artifacts.map((a) => (
           <button
             key={a.id}
-            onClick={() =>
-              setSelectedGraph(selectedGraph === a.id ? null : a.id)
-            }
-            className={`px-3 py-1.5 text-sm rounded border transition-colors ${
-              selectedGraph === a.id
-                ? "border-green-700 bg-green-900/30 text-green-300"
-                : "border-gray-700 text-gray-400 hover:border-gray-500"
+            onClick={() => setSel(sel === a.id ? null : a.id)}
+            className={`px-2.5 py-1 text-[11px] mono rounded border transition-colors ${
+              sel === a.id
+                ? "border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]"
+                : "border-[var(--border)] text-[var(--fg-dim)] hover:text-[var(--fg-muted)]"
             }`}
           >
             {a.name}
-            <span className="ml-2 text-xs opacity-60">
-              {a.metadata?.nodeCount}n / {a.metadata?.edgeCount}e
-            </span>
           </button>
         ))}
       </div>
+      {sel && <GraphViewer artifact={artifacts.find((a) => a.id === sel)!} />}
+    </div>
+  );
+}
 
-      {selectedGraph && (
-        <GraphViewer
-          artifact={artifacts.find((a) => a.id === selectedGraph)!}
-        />
-      )}
+function ArtifactsTab({ artifacts }: { artifacts: Artifact[] }) {
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  const download = async (id: string) => {
+    setDownloading(id);
+    try {
+      const data = await getArtifactUrl(id);
+      window.open(data.url, "_blank");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  if (artifacts.length === 0) {
+    return <Card><p className="text-[var(--fg-dim)] text-center text-xs mono py-8">no artifacts</p></Card>;
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {artifacts.map((a) => (
+        <div key={a.id} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg px-4 py-3 flex items-center justify-between">
+          <div>
+            <p className="text-xs text-[var(--fg)]">{a.name}</p>
+            <p className="mono text-[10px] text-[var(--fg-dim)] mt-0.5">
+              {a.type} / {a.contentType} / {a.sizeBytes ? `${(a.sizeBytes / 1024).toFixed(1)}KB` : "?"}
+            </p>
+          </div>
+          <button
+            onClick={() => download(a.id)}
+            disabled={downloading === a.id}
+            className="px-2.5 py-1 text-[11px] mono border border-[var(--border)] rounded text-[var(--fg-muted)] hover:text-[var(--fg)] hover:border-[var(--border-hover)] transition-colors disabled:opacity-40"
+          >
+            {downloading === a.id ? "..." : "download"}
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

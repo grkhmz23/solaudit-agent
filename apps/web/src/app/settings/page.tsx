@@ -5,132 +5,93 @@ import { getApiKey, setApiKey, fetchQueueHealth, fetchQueueStats } from "@/lib/h
 import { Card } from "@/components/ui";
 
 export default function SettingsPage() {
-  const [apiKey, setApiKeyState] = useState("");
+  const [key, setKeyState] = useState("");
   const [saved, setSaved] = useState(false);
-  const [health, setHealth] = useState<{
-    redis: string;
-    database: string;
-    timestamp: string;
-  } | null>(null);
-  const [queueStats, setQueueStats] = useState<{
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-  } | null>(null);
-  const [healthError, setHealthError] = useState<string | null>(null);
+  const [health, setHealth] = useState<{ redis: string; database: string; timestamp: string } | null>(null);
+  const [stats, setStats] = useState<{ waiting: number; active: number; completed: number; failed: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    setApiKeyState(getApiKey());
-    refreshHealth();
+    setKeyState(getApiKey());
+    refresh();
   }, []);
 
-  const refreshHealth = async () => {
-    setHealthError(null);
+  const refresh = async () => {
+    setErr(null);
     try {
       const [h, q] = await Promise.all([fetchQueueHealth(), fetchQueueStats()]);
       setHealth(h);
-      setQueueStats(q);
-    } catch (err: any) {
-      setHealthError(err.message);
-    }
+      setStats(q);
+    } catch (e: any) { setErr(e.message); }
   };
 
-  const handleSaveKey = () => {
-    setApiKey(apiKey);
+  const save = () => {
+    setApiKey(key);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">Settings</h1>
+    <div className="max-w-lg mx-auto space-y-4">
+      <h1 className="text-lg font-semibold">Configuration</h1>
 
-      {/* API Key */}
       <Card>
-        <h2 className="text-sm font-medium text-gray-300 mb-3">API Key</h2>
-        <p className="text-xs text-gray-500 mb-3">
-          Set the API key used for authenticating requests. This is stored in
-          your browser's localStorage.
-        </p>
+        <label className="block text-xs font-medium text-[var(--fg-muted)] mb-2 mono">api key</label>
         <div className="flex gap-2">
           <input
             type="password"
-            value={apiKey}
-            onChange={(e) => setApiKeyState(e.target.value)}
-            placeholder="Enter API key..."
-            className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-green-600"
+            value={key}
+            onChange={(e) => setKeyState(e.target.value)}
+            placeholder="enter api key..."
+            className="flex-1 px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded text-sm mono text-[var(--fg)] placeholder-[var(--fg-dim)] focus:outline-none focus:border-[var(--accent)] transition-colors"
           />
-          <button
-            onClick={handleSaveKey}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded transition-colors"
-          >
-            {saved ? "Saved!" : "Save"}
+          <button onClick={save} className="px-3 py-2 bg-[var(--accent)] text-black text-xs font-semibold rounded hover:brightness-110 transition-all">
+            {saved ? "saved" : "save"}
           </button>
         </div>
+        <p className="text-[10px] text-[var(--fg-dim)] mt-2 mono">stored in browser localStorage</p>
       </Card>
 
-      {/* System Health */}
       <Card>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-gray-300">System Health</h2>
-          <button
-            onClick={refreshHealth}
-            className="text-xs text-green-400 hover:text-green-300"
-          >
-            Refresh
-          </button>
+          <span className="text-xs font-medium text-[var(--fg-muted)] mono">system health</span>
+          <button onClick={refresh} className="text-[10px] mono text-[var(--accent)] hover:brightness-110">refresh</button>
         </div>
-
-        {healthError ? (
-          <p className="text-sm text-red-400">{healthError}</p>
+        {err ? (
+          <p className="text-xs mono text-red-400">{err}</p>
         ) : health ? (
           <div className="space-y-2">
-            <HealthRow label="Database" status={health.database} />
-            <HealthRow label="Redis" status={health.redis} />
-            <p className="text-xs text-gray-600 mt-2">
-              Last checked: {new Date(health.timestamp).toLocaleString()}
+            <HealthRow label="database" status={health.database} />
+            <HealthRow label="redis" status={health.redis} />
+            <p className="text-[10px] mono text-[var(--fg-dim)] mt-2">
+              checked {new Date(health.timestamp).toLocaleTimeString()}
             </p>
           </div>
         ) : (
-          <p className="text-sm text-gray-400">Loading...</p>
+          <Spinner />
         )}
       </Card>
 
-      {/* Queue Stats */}
       <Card>
-        <h2 className="text-sm font-medium text-gray-300 mb-3">
-          Queue Status
-        </h2>
-        {queueStats ? (
-          <div className="grid grid-cols-4 gap-3">
-            <QueueStat label="Waiting" value={queueStats.waiting} color="text-gray-300" />
-            <QueueStat label="Active" value={queueStats.active} color="text-blue-400" />
-            <QueueStat label="Completed" value={queueStats.completed} color="text-green-400" />
-            <QueueStat label="Failed" value={queueStats.failed} color="text-red-400" />
+        <span className="text-xs font-medium text-[var(--fg-muted)] mono block mb-3">queue</span>
+        {stats ? (
+          <div className="grid grid-cols-4 gap-2">
+            <Stat label="waiting" value={stats.waiting} color="text-[var(--fg-muted)]" />
+            <Stat label="active" value={stats.active} color="text-blue-400" />
+            <Stat label="done" value={stats.completed} color="text-[var(--accent)]" />
+            <Stat label="failed" value={stats.failed} color="text-red-400" />
           </div>
         ) : (
-          <p className="text-sm text-gray-400">Loading...</p>
+          <Spinner />
         )}
       </Card>
 
-      {/* Environment Info */}
       <Card>
-        <h2 className="text-sm font-medium text-gray-300 mb-3">
-          Configuration
-        </h2>
-        <p className="text-xs text-gray-500">
-          Environment variables are configured on the server side. Ensure the
-          worker process is running alongside Redis and PostgreSQL for full
-          functionality. See the README for details.
-        </p>
-        <div className="mt-3 space-y-1 text-xs font-mono text-gray-400">
-          <p>DATABASE_URL — PostgreSQL connection</p>
-          <p>REDIS_URL — Redis / Upstash connection</p>
-          <p>API_KEY — API authentication key</p>
-          <p>STORAGE_DIR — Artifact storage directory</p>
-          <p>WORKER_ENABLE_PROVE — Enable proof execution</p>
-          <p>GITHUB_TOKEN — Private repo access (optional)</p>
+        <span className="text-xs font-medium text-[var(--fg-muted)] mono block mb-3">env vars</span>
+        <div className="space-y-1 text-[11px] mono text-[var(--fg-dim)]">
+          {["DATABASE_URL", "REDIS_URL", "API_KEY", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "GITHUB_TOKEN"].map(v => (
+            <p key={v}>{v}</p>
+          ))}
         </div>
       </Card>
     </div>
@@ -138,39 +99,31 @@ export default function SettingsPage() {
 }
 
 function HealthRow({ label, status }: { label: string; status: string }) {
-  const isOk = status === "ok" || status === "connected";
+  const ok = status === "ok" || status === "connected";
   return (
     <div className="flex items-center justify-between py-1">
-      <span className="text-sm text-gray-400">{label}</span>
-      <div className="flex items-center gap-2">
-        <span
-          className={`w-2 h-2 rounded-full ${
-            isOk ? "bg-green-500" : "bg-red-500"
-          }`}
-        />
-        <span
-          className={`text-sm ${isOk ? "text-green-400" : "text-red-400"}`}
-        >
-          {status}
-        </span>
+      <span className="text-xs mono text-[var(--fg-muted)]">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <span className={`w-1.5 h-1.5 rounded-full ${ok ? "bg-[var(--accent)]" : "bg-red-400"}`} />
+        <span className={`text-[11px] mono ${ok ? "text-[var(--accent)]" : "text-red-400"}`}>{status}</span>
       </div>
     </div>
   );
 }
 
-function QueueStat({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: number;
-  color: string;
-}) {
+function Stat({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="text-center p-3 bg-gray-900 rounded border border-gray-800">
-      <p className={`text-2xl font-bold ${color}`}>{value}</p>
-      <p className="text-xs text-gray-500 mt-1">{label}</p>
+    <div className="text-center p-2.5 bg-[var(--bg)] rounded border border-[var(--border)]">
+      <p className={`text-xl font-bold mono ${color}`}>{value}</p>
+      <p className="text-[10px] mono text-[var(--fg-dim)] mt-0.5">{label}</p>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div className="flex justify-center py-4">
+      <div className="w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
     </div>
   );
 }
