@@ -1,0 +1,31 @@
+FROM node:20-alpine AS base
+RUN apk add --no-cache git
+RUN corepack enable && corepack prepare pnpm@9 --activate
+WORKDIR /app
+
+FROM base AS deps
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages/db/package.json packages/db/
+COPY packages/queue/package.json packages/queue/
+COPY packages/engine/package.json packages/engine/
+COPY apps/worker/package.json apps/worker/
+RUN pnpm install --frozen-lockfile || pnpm install
+
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
+COPY --from=deps /app/packages/queue/node_modules ./packages/queue/node_modules
+COPY --from=deps /app/packages/engine/node_modules ./packages/engine/node_modules
+COPY --from=deps /app/apps/worker/node_modules ./apps/worker/node_modules
+COPY . .
+RUN pnpm --filter @solaudit/db generate
+RUN pnpm --filter @solaudit/worker build
+
+FROM base AS runner
+ENV NODE_ENV=production
+COPY --from=builder /app/apps/worker/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/db/node_modules/.prisma ./node_modules/.prisma
+RUN mkdir -p /app/storage /tmp/solaudit-repos
+EXPOSE 4000
+CMD ["node", "dist/index.js"]

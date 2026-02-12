@@ -1,0 +1,20 @@
+{
+  "name": "solaudit-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @solaudit/web dev",
+    "dev:worker": "pnpm --filter @solaudit/worker dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write .",
+    "db:generate": "pnpm --filter @solaudit/db generate",
+    "db:migrate": "pnpm --filter @solaudit/db migrate",
+    "db:seed": "pnpm --filter @solaudit/db seed",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.5"
+  }
+}

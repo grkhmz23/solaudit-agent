@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuditStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum AuditMode {
+  SCAN
+  PROVE
+  FIX_PLAN
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum ProofStatus {
+  PENDING
+  PLANNED
+  RUNNING
+  PROVEN
+  DISPROVEN
+  SKIPPED
+  ERROR
+}
+
+enum ArtifactType {
+  LOG
+  SNAPSHOT
+  GRAPH
+  REPORT
+  PROOF_PLAN
+  PROOF_OUTPUT
+}
+
+model AuditJob {
+  id          String      @id @default(cuid())
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  status      AuditStatus @default(QUEUED)
+  mode        AuditMode
+  repoSource  String      // "url" or "upload"
+  repoUrl     String?
+  repoMeta    Json?       // { name, branch, commit, fileCount, etc. }
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  progress    Int         @default(0) // 0-100
+  stageName   String?     // current pipeline stage
+  summary     Json?       // executive summary
+  findings    Finding[]
+  artifacts   Artifact[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Finding {
+  id            String      @id @default(cuid())
+  createdAt     DateTime    @default(now())
+  auditJobId    String
+  auditJob      AuditJob    @relation(fields: [auditJobId], references: [id], onDelete: Cascade)
+  severity      Severity
+  classId       Int         // 1-15 vulnerability class
+  className     String
+  title         String
+  location      Json        // { file, line, endLine, instruction }
+  confidence    Float       // 0.0-1.0
+  hypothesis    String?     // exploit hypothesis
+  proofStatus   ProofStatus @default(PENDING)
+  proofPlan     Json?       // structured proof plan
+  proofArtifacts Json?      // proof execution results
+  fixPlan       Json?       // remediation plan
+  blastRadius   Json?       // affected accounts/instructions
+
+  @@index([auditJobId])
+  @@index([severity])
+  @@index([classId])
+}
+
+model Artifact {
+  id          String       @id @default(cuid())
+  createdAt   DateTime     @default(now())
+  auditJobId  String
+  auditJob    AuditJob     @relation(fields: [auditJobId], references: [id], onDelete: Cascade)
+  type        ArtifactType
+  name        String
+  path        String       // local file path or object key
+  metadata    Json?
+  sizeBytes   Int          @default(0)
+
+  @@index([auditJobId])
+  @@index([type])
+}
