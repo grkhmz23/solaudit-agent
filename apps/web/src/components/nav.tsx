@@ -6,6 +6,7 @@ const links = [
   { href: "/dashboard", label: "audits" },
   { href: "/audit/new", label: "new" },
   { href: "/settings", label: "config" },
+  { href: "/agent", label: "agent" },
 ];
 
 export function Nav() {

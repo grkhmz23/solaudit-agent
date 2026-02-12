@@ -13,6 +13,7 @@
     "@solaudit/db": "workspace:*",
     "@solaudit/queue": "workspace:*",
     "@solaudit/engine": "workspace:*",
+    "@solaudit/github": "workspace:*",
     "@solaudit/storage": "workspace:*",
     "bullmq": "^5.12.0",
     "zod": "^3.22.4"

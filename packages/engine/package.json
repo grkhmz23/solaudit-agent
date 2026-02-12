@@ -18,6 +18,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@solaudit/github": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
