@@ -1,79 +1,58 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@solaudit/db";
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/db';
+import { validateApiKey, errorResponse } from '@/lib/api-key';
+import { enqueueAudit } from '@/lib/queue';
+import crypto from 'crypto';
 
-// POST /api/agent - Start an agent run
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("x-api-key");
-  const expected = process.env.API_KEY;
-  if (expected && apiKey !== expected) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+  const authErr = validateApiKey(req);
+  if (authErr) return authErr;
   try {
     const body = await req.json();
     const { mode, repos, minStars, maxRepos, submitPRs } = body;
-
-    if (mode === "discover") {
-      const job = await prisma.auditJob.create({
-        data: {
-          repoUrl: "agent://discover",
-          repoSource: "agent",
-          mode: "FIX_PLAN",
-          status: "QUEUED",
-          progress: 0,
-          stageName: "queued",
-        },
+    if (mode === 'discover') {
+      const id = crypto.randomUUID();
+      await prisma.auditJob.create({
+        data: { id, repoUrl: 'agent://discover', repoSource: 'agent', mode: 'FIX_PLAN', status: 'QUEUED', repoMeta: {} },
       });
-
-      return NextResponse.json({ jobId: job.id, status: "queued" });
+      await enqueueAudit({
+        auditJobId: id, mode: 'FIX_PLAN', repoSource: 'agent', repoUrl: 'agent://discover',
+        agentConfig: { type: 'discover', minStars, maxRepos, submitPRs },
+      });
+      return NextResponse.json({ jobId: id, status: 'queued' });
     }
-
-    if (mode === "audit" && repos?.length > 0) {
-      const jobs: any[] = [];
+    if (mode === 'audit' && repos?.length > 0) {
+      const jobs = [];
       for (const repoUrl of repos.slice(0, 10)) {
-        const job = await prisma.auditJob.create({
-          data: {
-            repoUrl,
-            repoSource: "url",
-            mode: "FIX_PLAN",
-            status: "QUEUED",
-            progress: 0,
-            stageName: "queued",
-          },
+        const id = crypto.randomUUID();
+        await prisma.auditJob.create({
+          data: { id, repoUrl, repoSource: 'url', mode: 'FIX_PLAN', status: 'QUEUED', repoMeta: {} },
         });
-        jobs.push({ jobId: job.id, repoUrl });
+        await enqueueAudit({
+          auditJobId: id, mode: 'FIX_PLAN', repoSource: 'url', repoUrl,
+          agentConfig: { type: 'audit', submitPRs },
+        });
+        jobs.push({ jobId: id, repoUrl });
       }
-
-      return NextResponse.json({ jobs, status: "queued" });
+      return NextResponse.json({ jobs, status: 'queued' });
     }
-
-    return NextResponse.json(
-      { error: "Invalid mode. Use 'discover' or 'audit' with repos[]." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: 'Invalid mode' }, { status: 400 });
   } catch (err: any) {
+    console.error('POST /api/agent error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
-// GET /api/agent - Get agent run status
 export async function GET(req: NextRequest) {
-  const apiKey = req.headers.get("x-api-key");
-  const expected = process.env.API_KEY;
-  if (expected && apiKey !== expected) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+  const authErr = validateApiKey(req);
+  if (authErr) return authErr;
   try {
-    const agentJobs = await prisma.auditJob.findMany({
-      where: {
-        OR: [{ repoSource: "agent" }, { mode: "FIX_PLAN" }],
-      },
-      orderBy: { createdAt: "desc" },
+    const jobs = await prisma.auditJob.findMany({
+      where: { OR: [{ repoSource: 'agent' }, { mode: 'FIX_PLAN' }] },
+      orderBy: { createdAt: 'desc' },
       take: 20,
     });
-
-    return NextResponse.json({ jobs: agentJobs });
+    return NextResponse.json({ jobs });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

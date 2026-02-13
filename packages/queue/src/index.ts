@@ -12,9 +12,10 @@ export function createRedisConnection(): IORedis {
 export const AuditJobDataSchema = z.object({
   auditJobId: z.string(),
   mode: z.enum(["SCAN", "PROVE", "FIX_PLAN"]),
-  repoSource: z.enum(["url", "upload"]),
+  repoSource: z.enum(["url", "upload", "agent"]),
   repoUrl: z.string().optional(),
   uploadPath: z.string().optional(),
+  agentConfig: z.any().optional(),
 });
 
 export type AuditJobData = z.infer<typeof AuditJobDataSchema>;
