@@ -192,7 +192,7 @@ export default function AgentPage() {
   // Start/stop polling
   useEffect(() => {
     if (running && jobs.length > 0 && !pollRef.current) {
-      pollRef.current = setInterval(pollJobs, 2500);
+      pollRef.current = setInterval(pollJobs, 5000);
     }
     return () => {
       if (pollRef.current) {

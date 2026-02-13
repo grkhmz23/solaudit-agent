@@ -297,7 +297,7 @@ async function handleDiscoverAgent(
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
     data: {
-      status: "COMPLETED",
+      status: "SUCCEEDED",
       progress: 100,
       stageName: "completed",
       summary: minimalSummary,
@@ -415,7 +415,7 @@ async function handleSingleRepoAgent(
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
     data: {
-      status: run?.error ? "FAILED" : "COMPLETED",
+      status: run?.error ? "FAILED" : "SUCCEEDED",
       progress: 100,
       stageName: "completed",
       summary: minimalSummary,
