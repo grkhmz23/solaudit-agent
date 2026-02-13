@@ -20,3 +20,6 @@ export { executePocs, type PoCResult } from "./proof/executor";
 export { generateSecurityAdvisory, generatePRBody } from "./report/advisory";
 export { scoreRepo, getKnownProtocols, filterAuditableRepos, rankRepos, type RepoCandidate } from "./discovery/repo-selector";
 export { runAgent, type AgentConfig, type AgentRun, type AgentReport } from "./agent/orchestrator";
+
+// ── LLM layer ──
+export { isLLMAvailable, analyzeFinding, analyzeAllFindings, generatePRContent, generateLLMAdvisory, type EnrichedFinding, type PRContent } from "./llm/analyzer";

@@ -1,3 +1,4 @@
+import { handleAgentJob } from "./agent-handler";
 import { Worker, Job } from "bullmq";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync, rmSync, readdirSync, statSync } from "fs";
@@ -25,6 +26,16 @@ const worker = new Worker<AuditJobData>(
   AUDIT_QUEUE_NAME,
   async (job: Job<AuditJobData>) => {
     const { auditJobId, repoUrl, repoSource, mode } = job.data;
+
+      // ── Agent mode: full autonomous pipeline ──
+      if (repoUrl.startsWith("agent://") || job.data.agentConfig) {
+        console.log(`[worker] Agent mode for job ${auditJobId}`);
+        await handleAgentJob(job.data, async (stage, pct) => {
+          await job.updateProgress(pct);
+        });
+        return;
+      }
+
     const jobDir = path.join(STORAGE_DIR, "jobs", auditJobId);
     const repoDir = path.join(jobDir, "repo");
 

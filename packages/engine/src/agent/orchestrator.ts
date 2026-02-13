@@ -1,13 +1,18 @@
 /**
- * End-to-end Agent Orchestrator
+ * Agent Orchestrator v2 — Full End-to-End Bounty Pipeline
  *
- * Autonomous pipeline:
- * 1. Clone target repos
- * 2. Audit each with full pipeline
- * 3. Execute PoC tests
- * 4. Generate code patches
- * 5. Create professional advisory
- * 6. Fork repo, commit patches, open PR
+ * Autonomous flow:
+ * 1. Clone target repo
+ * 2. Run audit pipeline (SCAN → PROVE → FIX_PLAN)
+ * 3. Generate code patches for actionable findings
+ * 4. Execute PoC harnesses (if anchor/cargo available)
+ * 5. LLM-enrich findings (Moonshot/Kimi writes real descriptions)
+ * 6. Generate professional advisory document
+ * 7. Generate PR content via LLM
+ * 8. Fork repo, commit patches, open PR
+ *
+ * The LLM layer is what transforms template output into
+ * submission-quality write-ups that judges actually read.
  */
 
 import { execSync, type ExecSyncOptions } from "child_process";
@@ -17,22 +22,22 @@ import { runPipeline } from "../pipeline";
 import { generatePatches, type CodePatch } from "../remediation/patcher";
 import { executePocs, type PoCResult } from "../proof/executor";
 import { generateSecurityAdvisory, generatePRBody } from "../report/advisory";
+import {
+  isLLMAvailable,
+  analyzeAllFindings,
+  generatePRContent,
+  generateLLMAdvisory,
+  type EnrichedFinding,
+} from "../llm/analyzer";
 import type { PipelineResult } from "../types";
 
 export interface AgentConfig {
-  /** Working directory for cloned repos */
   workDir: string;
-  /** GitHub token for API access */
   githubToken?: string;
-  /** Max repos to process in one run */
   maxRepos?: number;
-  /** Run PoC tests? (requires anchor/cargo) */
   executePoCs?: boolean;
-  /** Submit PRs? */
   submitPRs?: boolean;
-  /** Progress callback */
   onProgress?: (step: string, detail: string) => Promise<void>;
-  /** Audit mode */
   mode?: "SCAN" | "PROVE" | "FIX_PLAN";
 }
 
@@ -45,6 +50,7 @@ export interface AgentRun {
   pipelineResult: PipelineResult | null;
   patches: CodePatch[];
   pocResults: PoCResult[];
+  enrichedFindings: EnrichedFinding[];
   advisory: string | null;
   prUrl: string | null;
   error: string | null;
@@ -60,9 +66,6 @@ export interface AgentReport {
   finishedAt: string;
 }
 
-/**
- * Run the full autonomous agent pipeline
- */
 export async function runAgent(
   repos: Array<{ url: string; owner: string; name: string; stars: number; score: number }>,
   config: AgentConfig
@@ -77,13 +80,18 @@ export async function runAgent(
     mkdirSync(config.workDir, { recursive: true });
   }
 
-  const reposToProcess = repos.slice(0, maxRepos);
+  const llmReady = isLLMAvailable();
+  if (llmReady) {
+    await progress("llm", "Moonshot/Kimi API available — findings will be LLM-enriched");
+  } else {
+    await progress("llm", "MOONSHOT_API_KEY not set — using template descriptions");
+  }
 
-  for (const repo of reposToProcess) {
+  for (const repo of repos.slice(0, maxRepos)) {
     const runStart = Date.now();
     const repoDir = path.join(config.workDir, `${repo.owner}_${repo.name}`);
 
-    await progress("auditing", `${repo.owner}/${repo.name} (${repo.stars} stars)`);
+    await progress("start", `Processing ${repo.owner}/${repo.name} (${repo.stars} stars)`);
 
     const run: AgentRun = {
       repoUrl: repo.url,
@@ -94,6 +102,7 @@ export async function runAgent(
       pipelineResult: null,
       patches: [],
       pocResults: [],
+      enrichedFindings: [],
       advisory: null,
       prUrl: null,
       error: null,
@@ -102,7 +111,7 @@ export async function runAgent(
 
     try {
       // ── Step 1: Clone ──
-      await progress("cloning", repo.url);
+      await progress("clone", `Cloning ${repo.url}...`);
       if (existsSync(repoDir)) rmSync(repoDir, { recursive: true, force: true });
       mkdirSync(repoDir, { recursive: true });
 
@@ -117,8 +126,8 @@ export async function runAgent(
       };
       execSync(`git clone --depth=1 --single-branch "${cloneUrl}" "${repoDir}"`, execOpts);
 
-      // ── Step 2: Audit ──
-      await progress("scanning", `Running ${mode} pipeline on ${repo.owner}/${repo.name}`);
+      // ── Step 2: Audit pipeline ──
+      await progress("audit", `Running ${mode} pipeline...`);
       const pipelineResult = await runPipeline({
         repoPath: repoDir,
         mode: mode as "SCAN" | "PROVE" | "FIX_PLAN",
@@ -128,67 +137,137 @@ export async function runAgent(
       });
       run.pipelineResult = pipelineResult;
 
-      const actionableFindings = pipelineResult.findings.filter(
+      const actionable = pipelineResult.findings.filter(
         (f) => ["CRITICAL", "HIGH"].includes(f.severity) && f.confidence >= 0.6
       );
 
-      if (actionableFindings.length === 0) {
-        await progress("skip", "No critical/high findings with sufficient confidence");
+      if (actionable.length === 0) {
+        await progress("skip", "No actionable findings found");
         run.durationMs = Date.now() - runStart;
         runs.push(run);
         continue;
       }
 
+      await progress("found", `${actionable.length} actionable finding(s)`);
+
       // ── Step 3: Generate patches ──
-      await progress("patching", `Generating fixes for ${actionableFindings.length} findings`);
-      const patches = generatePatches(actionableFindings, pipelineResult.program, repoDir);
+      await progress("patch", `Generating code patches...`);
+      const patches = generatePatches(actionable, pipelineResult.program, repoDir);
       run.patches = patches;
+      await progress("patch", `${patches.length} file(s) patched`);
 
       // ── Step 4: Execute PoCs ──
       if (config.executePoCs) {
-        await progress("proving", "Executing proof-of-concept harnesses");
-        const pocResults = executePocs(actionableFindings, pipelineResult.program, repoDir);
+        await progress("poc", "Running proof-of-concept tests...");
+        const pocResults = executePocs(actionable, pipelineResult.program, repoDir);
         run.pocResults = pocResults;
+        const proven = pocResults.filter((p) => p.status === "proven").length;
+        await progress("poc", `${proven}/${pocResults.length} PoCs proven`);
       }
 
-      // ── Step 5: Generate advisory ──
-      await progress("reporting", "Generating security advisory");
-      const advisory = generateSecurityAdvisory(
-        pipelineResult.program,
-        pipelineResult.findings,
-        pipelineResult.summary,
-        pipelineResult.graphs,
-        {
-          repoUrl: repo.url,
-          repoMeta: { stars: repo.stars, framework: pipelineResult.program.framework },
-          patches,
-          pocResults: run.pocResults,
+      // ── Step 5: LLM enrichment ──
+      if (llmReady) {
+        await progress("llm", "Analyzing findings with Kimi K2...");
+        try {
+          const enriched = await analyzeAllFindings(
+            actionable,
+            pipelineResult.program,
+            patches,
+            run.pocResults
+          );
+          run.enrichedFindings = enriched;
+          await progress("llm", `${enriched.length} findings enriched`);
+        } catch (e: any) {
+          await progress("llm_error", `LLM enrichment failed: ${e.message}`);
         }
-      );
-      run.advisory = advisory;
+      }
 
-      // Save advisory to disk
+      // ── Step 6: Generate advisory ──
+      await progress("advisory", "Generating security advisory...");
+
+      let advisory: string;
+      if (llmReady && run.enrichedFindings.length > 0) {
+        // Try LLM-powered advisory first
+        const llmAdvisory = await generateLLMAdvisory(
+          pipelineResult.program,
+          pipelineResult.findings,
+          pipelineResult.summary,
+          run.enrichedFindings,
+          patches,
+          run.pocResults,
+          repo.url
+        );
+        // Fall back to template if LLM returns empty
+        advisory = llmAdvisory || generateSecurityAdvisory(
+          pipelineResult.program,
+          pipelineResult.findings,
+          pipelineResult.summary,
+          pipelineResult.graphs,
+          {
+            repoUrl: repo.url,
+            repoMeta: { stars: repo.stars, framework: pipelineResult.program.framework },
+            patches,
+            pocResults: run.pocResults,
+          }
+        );
+      } else {
+        advisory = generateSecurityAdvisory(
+          pipelineResult.program,
+          pipelineResult.findings,
+          pipelineResult.summary,
+          pipelineResult.graphs,
+          {
+            repoUrl: repo.url,
+            repoMeta: { stars: repo.stars, framework: pipelineResult.program.framework },
+            patches,
+            pocResults: run.pocResults,
+          }
+        );
+      }
+
+      run.advisory = advisory;
       const advisoryPath = path.join(repoDir, "SECURITY_ADVISORY.md");
       writeFileSync(advisoryPath, advisory, "utf-8");
 
-      // ── Step 6: Submit PR ──
+      // ── Step 7: Submit PR ──
       if (config.submitPRs && config.githubToken && patches.length > 0) {
-        await progress("submitting", "Creating fork and opening PR");
+        await progress("pr", "Forking repo and opening pull request...");
         try {
-          // Dynamic import to avoid hard dependency
           const { GitHubClient } = await import("@solaudit/github");
           const gh = new GitHubClient(config.githubToken);
-          const { title, body } = generatePRBody(
-            pipelineResult.program,
-            actionableFindings,
-            pipelineResult.summary,
-            patches,
-            { repoUrl: repo.url }
-          );
+
+          // Use LLM-generated PR content if available
+          let prTitle: string;
+          let prBody: string;
+
+          if (llmReady && run.enrichedFindings.length > 0) {
+            const prContent = await generatePRContent(
+              pipelineResult.program,
+              actionable,
+              run.enrichedFindings,
+              patches,
+              repo.url
+            );
+            prTitle = prContent.title;
+            prBody = prContent.body;
+          } else {
+            const fallback = generatePRBody(
+              pipelineResult.program,
+              actionable,
+              pipelineResult.summary,
+              patches,
+              { repoUrl: repo.url }
+            );
+            prTitle = fallback.title;
+            prBody = fallback.body;
+          }
+
+          // Append advisory as a details block
+          prBody += `\n\n<details>\n<summary>Full Security Advisory</summary>\n\n${advisory}\n\n</details>`;
 
           const prResult = await gh.submitFix(repo.url, {
-            title,
-            body,
+            title: prTitle,
+            body: prBody,
             patches: patches.map((p) => ({
               path: p.file,
               content: p.patchedContent,
@@ -197,12 +276,14 @@ export async function runAgent(
           });
 
           run.prUrl = prResult.prUrl;
-          await progress("done", `PR opened: ${prResult.prUrl}`);
+          await progress("pr", `PR opened: ${prResult.prUrl}`);
         } catch (prErr: any) {
           await progress("pr_error", prErr.message);
-          run.error = `PR submission failed: ${prErr.message}`;
+          run.error = `PR failed: ${prErr.message}`;
         }
       }
+
+      await progress("done", `Completed ${repo.owner}/${repo.name}`);
     } catch (err: any) {
       run.error = err.message;
       await progress("error", err.message);
@@ -210,7 +291,6 @@ export async function runAgent(
       run.durationMs = Date.now() - runStart;
       runs.push(run);
 
-      // Cleanup
       if (existsSync(repoDir)) {
         rmSync(repoDir, { recursive: true, force: true });
       }
