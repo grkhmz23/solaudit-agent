@@ -45,6 +45,7 @@ enum ArtifactType {
   REPORT
   PROOF_PLAN
   PROOF_OUTPUT
+  ADVISORY
 }
 
 model AuditJob {

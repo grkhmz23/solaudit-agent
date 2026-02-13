@@ -395,10 +395,12 @@ async function handleSingleRepoAgent(
             severity: f.severity,
             confidence: f.confidence,
             title: enriched?.title || f.title,
-            description: enriched?.description || f.hypothesis || "",
-            file: f.location.file,
-            line: f.location.line,
-            instruction: f.location.instruction || null,
+            hypothesis: enriched?.description || f.hypothesis || "",
+            location: {
+              file: f.location.file,
+              line: f.location.line,
+              instruction: f.location.instruction || null,
+            },
           },
         });
       } catch (e: any) {
