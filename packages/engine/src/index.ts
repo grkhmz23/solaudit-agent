@@ -22,4 +22,5 @@ export { scoreRepo, getKnownProtocols, filterAuditableRepos, rankRepos, type Rep
 export { runAgent, type AgentConfig, type AgentRun, type AgentReport } from "./agent/orchestrator";
 
 // ── LLM layer ──
-export { isLLMAvailable, analyzeFinding, analyzeAllFindings, generatePRContent, generateLLMAdvisory, type EnrichedFinding, type PRContent } from "./llm/analyzer";
+
+export { isLLMAvailable, analyzeFinding, analyzeAllFindings, generatePRContent, generateLLMAdvisory, type EnrichedFinding, type PRContent, type LLMMetrics } from "./llm/analyzer";
