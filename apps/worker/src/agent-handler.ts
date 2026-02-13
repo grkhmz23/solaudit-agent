@@ -52,6 +52,7 @@ function buildMinimalSummary(report: any): any {
     totalEnriched: 0,
     totalPatches: 0,
     totalPRs: 0,
+    totalPocs: 0,
     runs: [],
   };
 
@@ -59,13 +60,15 @@ function buildMinimalSummary(report: any): any {
     for (const run of report.runs) {
       const runSummary: any = {
         repoUrl: run.repoUrl,
-        owner: run.owner,
-        name: run.name,
+        owner: run.repoOwner,
+        name: run.repoName,
         error: run.error ? truncateError(run.error, 500) : null,
         findingCount: run.pipelineResult?.findings?.length ?? 0,
         enrichedCount: run.enrichedFindings?.length ?? 0,
         patchCount: run.patches?.length ?? 0,
+        pocCount: run.generatedPocs?.length ?? 0,
         hasAdvisory: !!run.advisory,
+        hasSubmissionDoc: !!run.submissionDoc,
         prUrl: run.prUrl || null,
         durationMs: run.durationMs || null,
         severityCounts: {} as Record<string, number>,
@@ -91,6 +94,7 @@ function buildMinimalSummary(report: any): any {
       }
 
       summary.totalPatches += runSummary.patchCount;
+      summary.totalPocs += runSummary.pocCount;
       if (run.prUrl) summary.totalPRs++;
 
       summary.runs.push(runSummary);
@@ -149,6 +153,36 @@ async function uploadAdvisoryToR2(
     console.log(`[agent] Advisory uploaded to R2: ${result.objectKey}`);
   } catch (e: any) {
     console.warn(`[agent] Failed to upload advisory to R2: ${e.message}`);
+  }
+}
+
+async function uploadSubmissionDocToR2(
+  auditJobId: string,
+  doc: string,
+  owner: string,
+  name: string
+): Promise<string | null> {
+  try {
+    const fileName = `${owner}_${name}_submission.md`;
+    const result = await storage.putArtifact(
+      auditJobId, fileName, doc, "text/markdown"
+    );
+    await prisma.artifact.create({
+      data: {
+        auditJobId,
+        type: "REPORT",
+        name: fileName,
+        objectKey: result.objectKey,
+        contentType: "text/markdown",
+        metadata: { purpose: "bounty_submission" },
+        sizeBytes: result.sizeBytes,
+      },
+    });
+    console.log(`[agent] Submission doc uploaded to R2: ${result.objectKey} (${(result.sizeBytes / 1024).toFixed(1)} KB)`);
+    return result.objectKey;
+  } catch (e: any) {
+    console.warn(`[agent] Failed to upload submission doc to R2: ${e.message}`);
+    return null;
   }
 }
 
@@ -266,13 +300,15 @@ async function handleDiscoverAgent(
       console.log(`[agent] ${step}: ${detail}`);
       const pctMap: Record<string, number> = {
         clone: 20,
-        audit: 30,
-        pipeline: 40,
-        patch: 50,
-        poc: 55,
-        llm: 60,
+        audit: 28,
+        pipeline: 36,
+        patch: 44,
+        poc: 48,
+        llm: 55,
+        poc_gen: 63,
         advisory: 70,
-        pr: 80,
+        submission_doc: 76,
+        pr: 82,
         done: 90,
       };
       const pct = pctMap[step] || 50;
@@ -290,6 +326,16 @@ async function handleDiscoverAgent(
 
   // ── Upload full report to R2 ──
   await uploadReportToR2(jobData.auditJobId, report);
+
+  // ── Upload per-run advisories + submission docs to R2 ──
+  for (const run of report.runs) {
+    if (run.advisory) {
+      await uploadAdvisoryToR2(jobData.auditJobId, run.advisory, run.repoOwner, run.repoName);
+    }
+    if (run.submissionDoc) {
+      await uploadSubmissionDocToR2(jobData.auditJobId, run.submissionDoc, run.repoOwner, run.repoName);
+    }
+  }
 
   // ── Store only minimal summary in Postgres ──
   const minimalSummary = buildMinimalSummary(report);
@@ -338,12 +384,14 @@ async function handleSingleRepoAgent(
       const pctMap: Record<string, number> = {
         clone: 15,
         audit: 25,
-        pipeline: 40,
-        found: 45,
-        patch: 50,
-        poc: 55,
-        llm: 65,
-        advisory: 75,
+        pipeline: 35,
+        found: 40,
+        patch: 45,
+        poc: 50,
+        llm: 58,
+        poc_gen: 66,
+        advisory: 72,
+        submission_doc: 78,
         pr: 85,
         done: 95,
       };
@@ -380,13 +428,69 @@ async function handleSingleRepoAgent(
     await uploadAdvisoryToR2(jobData.auditJobId, run.advisory, owner, name);
   }
 
-  // ── Store findings in DB ──
+  // ── Upload submission document to R2 (Priority 3) ──
+  if (run?.submissionDoc) {
+    await uploadSubmissionDocToR2(jobData.auditJobId, run.submissionDoc, owner, name);
+  }
+
+  // ── Store findings in DB (with PoC data, fix plans, blast radius) ──
   if (run?.pipelineResult?.findings) {
     for (const f of run.pipelineResult.findings) {
       try {
         const enriched = run.enrichedFindings?.find(
           (e: any) => e.title === f.title || e.title.includes(f.className)
         );
+
+        // Match generated PoC to this finding
+        const poc = run.generatedPocs?.find(
+          (p: any) =>
+            p.findingTitle === f.title ||
+            (p.classId === f.classId && p.severity === f.severity)
+        );
+
+        // Match legacy PoC execution result
+        const pocExec = run.pocResults?.find(
+          (p: any) => p.findingTitle === f.title
+        );
+
+        // Determine proof status
+        let proofStatus: "PENDING" | "PLANNED" | "PROVEN" | "DISPROVEN" | "SKIPPED" | "ERROR" = "PENDING";
+        if (pocExec?.status === "proven") proofStatus = "PROVEN";
+        else if (pocExec?.status === "disproven") proofStatus = "DISPROVEN";
+        else if (pocExec?.status === "error") proofStatus = "ERROR";
+        else if (poc?.status === "generated") proofStatus = "PLANNED";
+        else if (poc?.status === "fallback") proofStatus = "PLANNED";
+
+        // Build proof plan from generated PoC or existing plan
+        const proofPlan = poc
+          ? {
+              steps: poc.reproSteps,
+              harness: poc.testCode.slice(0, 8000),
+              fileName: poc.fileName,
+              runCommand: poc.runCommand,
+              framework: poc.framework,
+              stateComparison: poc.stateComparison,
+              generationStatus: poc.status,
+            }
+          : f.proofPlan
+            ? {
+                steps: f.proofPlan.steps,
+                harness: f.proofPlan.harness?.slice(0, 4000) || null,
+                deltaSchema: f.proofPlan.deltaSchema || null,
+              }
+            : null;
+
+        // Build proof artifacts from execution results
+        const proofArtifacts = pocExec
+          ? {
+              status: pocExec.status,
+              output: pocExec.output?.slice(0, 3000) || null,
+              testFile: pocExec.testFile,
+              command: pocExec.command,
+              durationMs: pocExec.durationMs,
+            }
+          : null;
+
         await prisma.finding.create({
           data: {
             auditJobId: jobData.auditJobId,
@@ -401,6 +505,24 @@ async function handleSingleRepoAgent(
               line: f.location.line,
               instruction: f.location.instruction || null,
             },
+            proofStatus,
+            proofPlan: proofPlan || undefined,
+            proofArtifacts: proofArtifacts || undefined,
+            fixPlan: f.fixPlan
+              ? {
+                  pattern: f.fixPlan.pattern,
+                  description: f.fixPlan.description,
+                  code: f.fixPlan.code?.slice(0, 4000) || null,
+                  regressionTests: f.fixPlan.regressionTests || [],
+                }
+              : undefined,
+            blastRadius: f.blastRadius
+              ? {
+                  affectedAccounts: f.blastRadius.affectedAccounts,
+                  affectedInstructions: f.blastRadius.affectedInstructions,
+                  signerChanges: f.blastRadius.signerChanges,
+                }
+              : undefined,
           },
         });
       } catch (e: any) {

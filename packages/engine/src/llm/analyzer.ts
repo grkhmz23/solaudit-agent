@@ -614,6 +614,163 @@ function fallbackPRContent(
   };
 }
 
+// ─── Bounty-Grade PR Body (Priority 2) ──────────────────────
+
+import type { GeneratedPoC } from "../proof/llm-poc-generator";
+
+export interface BountyPRContent {
+  title: string;
+  body: string;
+}
+
+/**
+ * Generate a PR body structured for the Superteam bounty requirements:
+ * 1. Executive Summary
+ * 2. Finding Table
+ * 3. Detailed Write-ups per critical/high finding
+ * 4. PoC References
+ * 5. Fix Verification
+ * 6. Full Advisory (collapsible)
+ */
+export function generateBountyPRBody(
+  program: ParsedProgram,
+  findings: FindingResult[],
+  enriched: EnrichedFinding[],
+  patches: CodePatch[],
+  pocs: GeneratedPoC[],
+  pocResults: PoCResult[],
+  repoUrl: string,
+  submissionDocUrl?: string,
+): BountyPRContent {
+  const critical = findings.filter((f) => f.severity === "CRITICAL");
+  const high = findings.filter((f) => f.severity === "HIGH");
+  const n = critical.length + high.length;
+  const actionable = [...critical, ...high].filter((f) => f.confidence >= 0.6);
+
+  const title = `fix: ${n} security issue${n !== 1 ? "s" : ""} in ${program.name} — SolAudit Agent`;
+
+  const lines: string[] = [];
+
+  // ── 1. Executive Summary ──
+  lines.push(`## Executive Summary
+
+Automated security audit of **${program.name}** (\`${program.framework}\`) identified **${critical.length} critical** and **${high.length} high** severity vulnerabilities across ${program.instructions.length} instructions. This PR includes code fixes for ${patches.length} file(s) and ${pocs.length} proof-of-concept test(s).
+
+> **Agent:** [SolAudit Agent](https://github.com/grkhmz23/solaudit-agent) | **Live:** [solaudit.fun](https://solaudit.fun)
+${submissionDocUrl ? `> **Full Submission Document:** [View detailed write-up](${submissionDocUrl})` : ""}
+`);
+
+  // ── 2. Finding Table ──
+  lines.push(`## Findings Summary
+
+| # | Severity | Title | File | Line | Confidence | Exploitability | PoC |
+|---|----------|-------|------|------|------------|----------------|-----|`);
+
+  for (let i = 0; i < actionable.length; i++) {
+    const f = actionable[i];
+    const e = enriched.find((en) => en.title === f.title || en.title.includes(f.className));
+    const poc = pocs.find(
+      (p) => p.findingTitle === f.title || (p.classId === f.classId && p.severity === f.severity)
+    );
+    lines.push(
+      `| ${i + 1} | **${f.severity}** | ${(e?.title || f.title).slice(0, 60)} | \`${f.location.file.split("/").pop()}\` | ${f.location.line} | ${(f.confidence * 100).toFixed(0)}% | ${e?.exploitability || "—"} | ${poc ? "✅" : "—"} |`
+    );
+  }
+  lines.push("");
+
+  // ── 3. Detailed Write-ups ──
+  lines.push(`## Detailed Findings\n`);
+
+  for (let i = 0; i < Math.min(actionable.length, 15); i++) {
+    const f = actionable[i];
+    const e = enriched.find((en) => en.title === f.title || en.title.includes(f.className));
+    const poc = pocs.find(
+      (p) => p.findingTitle === f.title || (p.classId === f.classId && p.severity === f.severity)
+    );
+    const patch = patches.find((p) => p.file === f.location.file);
+
+    lines.push(`### ${i + 1}. [${f.severity}] ${e?.title || f.title}
+
+**Location:** \`${f.location.file}:${f.location.line}\`${f.location.instruction ? ` @ \`${f.location.instruction}\`` : ""}
+**Class:** #${f.classId} — ${f.className}
+**Confidence:** ${(f.confidence * 100).toFixed(0)}%
+
+**Impact:** ${e?.impact || f.hypothesis || "See detailed analysis"}
+
+**Exploitability:** ${e?.exploitability || (f.severity === "CRITICAL" ? "Easy" : "Moderate")}
+`);
+
+    // PoC reference
+    if (poc) {
+      lines.push(`**Proof of Concept:** \`${poc.fileName}\`
+**Run:** \`${poc.runCommand}\`
+
+<details>
+<summary>Reproduction Steps</summary>
+
+${poc.reproSteps.map((st, j) => `${j + 1}. ${st}`).join("\n")}
+
+**State before:** ${poc.stateComparison.preState}
+**State after:** ${poc.stateComparison.postState}
+**Assertion:** ${poc.stateComparison.assertion}
+
+</details>
+`);
+    } else if (f.proofPlan?.steps) {
+      lines.push(`**Proof Plan:**
+
+${f.proofPlan.steps.map((st, j) => `${j + 1}. ${st}`).join("\n")}
+`);
+    }
+
+    // Fix
+    if (patch) {
+      lines.push(`**Fix Applied:** ${patch.description}
+
+<details>
+<summary>View Diff</summary>
+
+\`\`\`diff
+${patch.diff.slice(0, 2000)}
+\`\`\`
+
+</details>
+`);
+    }
+
+    lines.push("---\n");
+  }
+
+  // ── 4. Fix Verification ──
+  lines.push(`## Fix Verification
+
+To verify the fixes in this PR:
+
+1. **Review each changed file** for correctness against the finding description
+2. **Run the existing test suite:** \`${program.framework === "anchor" ? "anchor test" : "cargo test-sbf"}\`
+3. **Run PoC tests** to confirm the vulnerability is no longer exploitable:
+${pocs.slice(0, 5).map((p) => `   - \`${p.runCommand}\``).join("\n")}
+4. **Check state invariants** — ensure no regressions in related instructions
+`);
+
+  // ── 5. Files Changed ──
+  lines.push(`## Files Changed
+
+${patches.map((p) => `- \`${p.file}\` — ${p.description}`).join("\n")}
+
+${pocs.length > 0 ? `### PoC Test Files Added\n\n${pocs.map((p) => `- \`${p.fileName}\` — PoC for: ${p.findingTitle.slice(0, 60)}`).join("\n")}` : ""}
+`);
+
+  // ── Footer ──
+  lines.push(`---
+
+*This PR was created by [SolAudit Agent](https://github.com/grkhmz23/solaudit-agent), an autonomous AI-powered Solana security auditor.*
+*Pipeline: Clone → Parse → 15 Detectors → LLM Enrich → PoC Gen → Patch → Advisory → PR*
+*Live demo: [solaudit.fun](https://solaudit.fun)*`);
+
+  return { title, body: lines.join("\n") };
+}
+
 // ─── Advisory Document ──────────────────────────────────────
 
 export async function generateLLMAdvisory(

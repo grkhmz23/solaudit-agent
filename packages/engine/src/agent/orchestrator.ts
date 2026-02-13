@@ -1,5 +1,5 @@
 /**
- * Agent Orchestrator v2 — Full End-to-End Bounty Pipeline
+ * Agent Orchestrator v3 — Full End-to-End Bounty Pipeline
  *
  * Autonomous flow:
  * 1. Clone target repo
@@ -7,9 +7,10 @@
  * 3. Generate code patches for actionable findings
  * 4. Execute PoC harnesses (if anchor/cargo available)
  * 5. LLM-enrich findings (dedupe → select → deep dive)
+ * 5.5. LLM PoC generation (NEW — realistic test files per finding)
  * 6. Generate professional advisory document
- * 7. Generate PR content via LLM
- * 8. Fork repo, commit patches, open PR
+ * 6.5. Generate bounty submission document (NEW — detailed write-up)
+ * 7. Generate bounty-grade PR body, fork repo, commit patches + PoCs, open PR
  */
 
 import { execSync, type ExecSyncOptions } from "child_process";
@@ -18,12 +19,15 @@ import * as path from "path";
 import { runPipeline } from "../pipeline";
 import { generatePatches, type CodePatch } from "../remediation/patcher";
 import { executePocs, type PoCResult } from "../proof/executor";
+import { generatePoCs, type GeneratedPoC } from "../proof/llm-poc-generator";
 import { generateSecurityAdvisory, generatePRBody } from "../report/advisory";
+import { generateSubmissionDocument } from "../report/submission-doc";
 import {
   isLLMAvailable,
   analyzeAllFindings,
   generatePRContent,
   generateLLMAdvisory,
+  generateBountyPRBody,
   type EnrichedFinding,
   type LLMMetrics,
 } from "../llm/analyzer";
@@ -48,9 +52,11 @@ export interface AgentRun {
   pipelineResult: PipelineResult | null;
   patches: CodePatch[];
   pocResults: PoCResult[];
+  generatedPocs: GeneratedPoC[];
   enrichedFindings: EnrichedFinding[];
   llmMetrics: LLMMetrics | null;
   advisory: string | null;
+  submissionDoc: string | null;
   prUrl: string | null;
   error: string | null;
   durationMs: number;
@@ -101,9 +107,11 @@ export async function runAgent(
       pipelineResult: null,
       patches: [],
       pocResults: [],
+      generatedPocs: [],
       enrichedFindings: [],
       llmMetrics: null,
       advisory: null,
+      submissionDoc: null,
       prUrl: null,
       error: null,
       durationMs: 0,
@@ -156,7 +164,7 @@ export async function runAgent(
       run.patches = patches;
       await progress("patch", `${patches.length} file(s) patched`);
 
-      // —— Step 4: Execute PoCs ——
+      // —— Step 4: Execute PoCs (legacy — optional) ——
       if (config.executePoCs) {
         await progress("poc", "Running proof-of-concept tests...");
         const pocResults = executePocs(actionable, pipelineResult.program, repoDir);
@@ -184,6 +192,25 @@ export async function runAgent(
         } catch (e: any) {
           await progress("llm_error", `LLM enrichment failed: ${e.message}`);
         }
+      }
+
+      // —— Step 5.5: LLM PoC Generation (NEW — Priority 1) ——
+      await progress("poc_gen", "Generating proof-of-concept tests via LLM...");
+      try {
+        const generatedPocs = await generatePoCs(
+          pipelineResult.findings,
+          pipelineResult.program,
+          run.enrichedFindings,
+          patches,
+        );
+        run.generatedPocs = generatedPocs;
+        const llmGen = generatedPocs.filter((p) => p.status === "generated").length;
+        await progress(
+          "poc_gen",
+          `${llmGen}/${generatedPocs.length} PoCs LLM-generated`
+        );
+      } catch (e: any) {
+        await progress("poc_gen_error", `PoC generation failed: ${e.message}`);
       }
 
       // —— Step 6: Generate advisory ——
@@ -231,17 +258,57 @@ export async function runAgent(
       const advisoryPath = path.join(repoDir, "SECURITY_ADVISORY.md");
       writeFileSync(advisoryPath, advisory, "utf-8");
 
-      // —— Step 7: Submit PR ——
+      // —— Step 6.5: Generate Submission Document (NEW — Priority 3) ——
+      await progress("submission_doc", "Generating bounty submission document...");
+      try {
+        const submissionDoc = generateSubmissionDocument(
+          pipelineResult.program,
+          pipelineResult.findings,
+          pipelineResult.summary,
+          pipelineResult.graphs,
+          run.enrichedFindings,
+          patches,
+          run.pocResults,
+          run.generatedPocs,
+          run.llmMetrics,
+          {
+            repoUrl: repo.url,
+            repoMeta: { stars: repo.stars, framework: pipelineResult.program.framework },
+            agentRepoUrl: "https://github.com/grkhmz23/solaudit-agent",
+          },
+        );
+        run.submissionDoc = submissionDoc;
+        const submissionDocPath = path.join(repoDir, "SUBMISSION.md");
+        writeFileSync(submissionDocPath, submissionDoc, "utf-8");
+        await progress("submission_doc", "Submission document generated");
+      } catch (e: any) {
+        await progress("submission_doc_error", `Submission doc failed: ${e.message}`);
+      }
+
+      // —— Step 7: Submit PR (enhanced with bounty-grade body + PoC files) ——
       if (config.submitPRs && config.githubToken && patches.length > 0) {
         await progress("pr", "Forking repo and opening pull request...");
         try {
           const { GitHubClient } = await import("@solaudit/github");
           const gh = new GitHubClient(config.githubToken);
 
+          // Build PR content — use bounty-grade PR body if we have enriched findings + pocs
           let prTitle: string;
           let prBody: string;
 
-          if (llmReady && run.enrichedFindings.length > 0) {
+          if (run.enrichedFindings.length > 0 || run.generatedPocs.length > 0) {
+            const bountyPR = generateBountyPRBody(
+              pipelineResult.program,
+              actionable,
+              run.enrichedFindings,
+              patches,
+              run.generatedPocs,
+              run.pocResults,
+              repo.url,
+            );
+            prTitle = bountyPR.title;
+            prBody = bountyPR.body;
+          } else if (llmReady && run.enrichedFindings.length > 0) {
             const prContent = await generatePRContent(
               pipelineResult.program,
               actionable,
@@ -265,18 +332,29 @@ export async function runAgent(
 
           prBody += `\n\n<details>\n<summary>Full Security Advisory</summary>\n\n${advisory}\n\n</details>`;
 
+          // Build patch files: code patches + PoC test files
+          const allPatchFiles: Array<{ path: string; content: string }> = [
+            ...patches.map((p) => ({ path: p.file, content: p.patchedContent })),
+            ...run.generatedPocs.map((poc) => ({ path: poc.fileName, content: poc.testCode })),
+          ];
+
           const prResult = await gh.submitFix(repo.url, {
             title: prTitle,
             body: prBody,
-            patches: patches.map((p) => ({
-              path: p.file,
-              content: p.patchedContent,
-            })),
+            patches: allPatchFiles,
             branch: `solaudit/security-fix-${Date.now()}`,
           });
 
           run.prUrl = prResult.prUrl;
           await progress("pr", `PR opened: ${prResult.prUrl}`);
+
+          // Update submission doc with PR URL
+          if (run.submissionDoc) {
+            run.submissionDoc = run.submissionDoc.replace(
+              "| **Pull Request** | Pending |",
+              `| **Pull Request** | [View PR](${prResult.prUrl}) |`
+            );
+          }
         } catch (prErr: any) {
           await progress("pr_error", prErr.message);
           run.error = `PR failed: ${prErr.message}`;
