@@ -12,6 +12,11 @@ const STORAGE_DIR = process.env.STORAGE_DIR || "/tmp/solaudit-storage";
 const MAX_REPO_SIZE_MB = 200;
 const CLONE_TIMEOUT_MS = 60_000;
 
+function truncateError(err: unknown, max = 2000): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.length > max ? msg.slice(0, max) + "…(truncated)" : msg;
+}
+
 if (!existsSync(STORAGE_DIR)) {
   mkdirSync(STORAGE_DIR, { recursive: true });
 }
@@ -27,15 +32,26 @@ const worker = new Worker<AuditJobData>(
   async (job: Job<AuditJobData>) => {
     const { auditJobId, repoUrl, repoSource, mode } = job.data;
 
-      // ── Agent mode: full autonomous pipeline ──
-      if (repoUrl.startsWith("agent://") || job.data.agentConfig) {
-        console.log(`[worker] Agent mode for job ${auditJobId}`);
+    // ── Agent mode: full autonomous pipeline ──
+    if (repoUrl.startsWith("agent://") || job.data.agentConfig) {
+      console.log(`[worker] Agent mode for job ${auditJobId}`);
+      try {
         await handleAgentJob(job.data, async (stage, pct) => {
           await job.updateProgress(pct);
         });
-        return;
+      } catch (agentErr: any) {
+        const truncated = truncateError(agentErr);
+        console.error(`[worker] agent job ${auditJobId} failed:`, truncated);
+        await prisma.auditJob.update({
+          where: { id: auditJobId },
+          data: { status: "FAILED", finishedAt: new Date(), error: truncated },
+        });
+        throw new Error(truncated);
       }
+      return;
+    }
 
+    // ── Standard audit mode ──
     const jobDir = path.join(STORAGE_DIR, "jobs", auditJobId);
     const repoDir = path.join(jobDir, "repo");
 
@@ -144,12 +160,14 @@ const worker = new Worker<AuditJobData>(
 
       console.log(`[worker] audit ${auditJobId} completed: ${result.findings.length} findings`);
     } catch (err: any) {
-      console.error(`[worker] audit ${auditJobId} failed:`, err.message);
+      const truncated = truncateError(err);
+      console.error(`[worker] audit ${auditJobId} failed:`, truncated);
       await prisma.auditJob.update({
         where: { id: auditJobId },
-        data: { status: "FAILED", finishedAt: new Date(), error: err.message || "Unknown error" },
+        data: { status: "FAILED", finishedAt: new Date(), error: truncated },
       });
-      throw err;
+      // Re-throw truncated so BullMQ failedReason stays small
+      throw new Error(truncated);
     } finally {
       if (existsSync(repoDir)) {
         rmSync(repoDir, { recursive: true, force: true });
@@ -160,6 +178,8 @@ const worker = new Worker<AuditJobData>(
     connection: redis,
     concurrency: 2,
     limiter: { max: 4, duration: 60_000 },
+    removeOnComplete: { count: 1000 },
+    removeOnFail: { count: 500 },
   }
 );
 

@@ -5,12 +5,13 @@
  * - "discover" mode: Search GitHub → rank repos → run agent pipeline
  * - "audit" mode: Direct audit on specified repo URL
  *
- * Wires the full orchestrator into the BullMQ worker.
- *
- * FIXES (v2.1):
- * - resultJson → summary (matches Prisma schema)
- * - Strip file contents from report before saving (91MB → ~500KB)
- *   to stay within Upstash Redis 10MB limit
+ * FIXES (v3 — production hardening per manager review):
+ * - Full report uploaded to R2 as artifact (not stuffed into Postgres summary)
+ * - Advisory content actually uploaded to R2 (not just DB record)
+ * - Artifact field names fixed: size→sizeBytes, storageKey→objectKey
+ * - Only minimal summary stored in auditJob.summary
+ * - Error messages truncated to prevent BullMQ/Upstash blowup
+ * - LLM timeout raised to 180s (in analyzer.ts)
  */
 
 import { prisma } from "@solaudit/db";
@@ -20,6 +21,7 @@ import {
   getKnownProtocols,
   type AgentConfig,
 } from "@solaudit/engine";
+import { getStorage } from "@solaudit/storage";
 import type { AuditJobData } from "@solaudit/queue";
 
 interface AgentJobConfig {
@@ -29,89 +31,27 @@ interface AgentJobConfig {
   submitPRs?: boolean;
 }
 
-// ── Payload stripping ──────────────────────────────────────────────
-// The orchestrator returns full file contents (source code) inside
-// pipelineResult.program.files[].content / .lines which can be 90MB+.
-// We strip those before persisting to Postgres and before BullMQ
-// stores the return value in Redis (Upstash 10MB limit).
+const storage = getStorage();
 
-function stripLargeFields(report: any): any {
-  if (!report || typeof report !== "object") return report;
+// ── Error truncation ────────────────────────────────────────────────
+// Prevents massive Prisma/runtime errors from blowing up BullMQ
+// failedReason in Redis (Upstash 10MB limit).
 
-  // Deep clone to avoid mutating the original
-  const stripped = JSON.parse(JSON.stringify(report));
-
-  if (Array.isArray(stripped.runs)) {
-    for (const run of stripped.runs) {
-      // Strip file contents from pipelineResult.program.files
-      if (run.pipelineResult?.program?.files) {
-        run.pipelineResult.program.files = run.pipelineResult.program.files.map(
-          (f: any) => ({
-            path: f.path,
-            language: f.language,
-            size: f.size ?? f.content?.length ?? 0,
-            lineCount: f.lineCount ?? f.lines?.length ?? 0,
-            // Drop: content, lines, ast, tokens — these are the massive fields
-          })
-        );
-      }
-
-      // Strip raw source from findings if embedded
-      if (Array.isArray(run.pipelineResult?.findings)) {
-        for (const finding of run.pipelineResult.findings) {
-          if (finding.sourceSnippet && finding.sourceSnippet.length > 2000) {
-            finding.sourceSnippet =
-              finding.sourceSnippet.slice(0, 2000) + "\n// ... truncated";
-          }
-        }
-      }
-
-      // Strip patches content if very large (keep first 5000 chars each)
-      if (Array.isArray(run.patches)) {
-        for (const patch of run.patches) {
-          if (patch.diff && patch.diff.length > 5000) {
-            patch.diff =
-              patch.diff.slice(0, 5000) +
-              "\n// ... truncated (full patch in PR)";
-          }
-        }
-      }
-
-      // Keep advisory as-is (it's generated markdown, typically <100KB)
-      // Keep enrichedFindings as-is (compact LLM summaries)
-    }
-  }
-
-  return stripped;
+function truncateError(err: unknown, max = 2000): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.length > max ? msg.slice(0, max) + "…(truncated)" : msg;
 }
 
-// Validate stripped payload is under a size limit (default 8MB, leaving 2MB headroom)
-function validatePayloadSize(
-  payload: any,
-  label: string,
-  maxBytes = 8 * 1024 * 1024
-): any {
-  const json = JSON.stringify(payload);
-  const size = Buffer.byteLength(json, "utf-8");
-  console.log(
-    `[agent] ${label} payload size: ${(size / 1024 / 1024).toFixed(2)} MB`
-  );
+// ── Minimal summary for Postgres ────────────────────────────────────
+// Only counts, severity breakdown, and enriched titles go into the DB.
+// Full report goes to R2.
 
-  if (size > maxBytes) {
-    console.warn(
-      `[agent] ${label} still too large (${(size / 1024 / 1024).toFixed(2)} MB), ` +
-        `creating minimal summary instead`
-    );
-    return createMinimalSummary(payload);
-  }
-  return payload;
-}
-
-function createMinimalSummary(report: any): any {
+function buildMinimalSummary(report: any): any {
   const summary: any = {
-    _truncated: true,
-    _reason: "Payload exceeded 8MB limit, storing minimal summary",
     totalFindings: 0,
+    totalEnriched: 0,
+    totalPatches: 0,
+    totalPRs: 0,
     runs: [],
   };
 
@@ -121,39 +61,95 @@ function createMinimalSummary(report: any): any {
         repoUrl: run.repoUrl,
         owner: run.owner,
         name: run.name,
-        error: run.error || null,
+        error: run.error ? truncateError(run.error, 500) : null,
         findingCount: run.pipelineResult?.findings?.length ?? 0,
         enrichedCount: run.enrichedFindings?.length ?? 0,
         patchCount: run.patches?.length ?? 0,
         hasAdvisory: !!run.advisory,
         prUrl: run.prUrl || null,
+        durationMs: run.durationMs || null,
         severityCounts: {} as Record<string, number>,
       };
 
-      // Count by severity
       if (Array.isArray(run.pipelineResult?.findings)) {
         for (const f of run.pipelineResult.findings) {
-          const sev = f.severity || "unknown";
-          runSummary.severityCounts[sev] =
-            (runSummary.severityCounts[sev] || 0) + 1;
+          const sev = f.severity || "UNKNOWN";
+          runSummary.severityCounts[sev] = (runSummary.severityCounts[sev] || 0) + 1;
         }
         summary.totalFindings += run.pipelineResult.findings.length;
       }
 
-      // Keep enriched finding titles/descriptions (compact)
+      // Keep enriched titles + impact (compact, ~50 bytes each)
       if (Array.isArray(run.enrichedFindings)) {
-        runSummary.enrichedFindings = run.enrichedFindings.map((ef: any) => ({
-          title: ef.title,
-          severity: ef.severity,
-          description: ef.description?.slice(0, 500),
+        runSummary.enrichedTitles = run.enrichedFindings.map((ef: any) => ({
+          title: String(ef.title || "").slice(0, 120),
+          impact: String(ef.impact || ef.description || "").slice(0, 240),
+          exploitability: ef.exploitability || "unknown",
+          confidence: ef.confidence,
         }));
+        summary.totalEnriched += run.enrichedFindings.length;
       }
+
+      summary.totalPatches += runSummary.patchCount;
+      if (run.prUrl) summary.totalPRs++;
 
       summary.runs.push(runSummary);
     }
   }
 
   return summary;
+}
+
+// ── R2 upload helpers ───────────────────────────────────────────────
+
+async function uploadReportToR2(auditJobId: string, report: any): Promise<void> {
+  try {
+    const reportJson = JSON.stringify(report, null, 2);
+    const result = await storage.putArtifact(
+      auditJobId, "agent-result.json", reportJson, "application/json"
+    );
+    await prisma.artifact.create({
+      data: {
+        auditJobId,
+        type: "REPORT",
+        name: "agent-result.json",
+        objectKey: result.objectKey,
+        contentType: "application/json",
+        metadata: {},
+        sizeBytes: result.sizeBytes,
+      },
+    });
+    console.log(`[agent] Full report uploaded to R2: ${result.objectKey} (${(result.sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+  } catch (e: any) {
+    console.warn(`[agent] Failed to upload report to R2: ${e.message}`);
+  }
+}
+
+async function uploadAdvisoryToR2(
+  auditJobId: string,
+  advisory: string,
+  owner: string,
+  name: string
+): Promise<void> {
+  try {
+    const result = await storage.putArtifact(
+      auditJobId, `${owner}_${name}_advisory.md`, advisory, "text/markdown"
+    );
+    await prisma.artifact.create({
+      data: {
+        auditJobId,
+        type: "ADVISORY",
+        name: `${owner}_${name}_advisory.md`,
+        objectKey: result.objectKey,
+        contentType: "text/markdown",
+        metadata: {},
+        sizeBytes: result.sizeBytes,
+      },
+    });
+    console.log(`[agent] Advisory uploaded to R2: ${result.objectKey}`);
+  } catch (e: any) {
+    console.warn(`[agent] Failed to upload advisory to R2: ${e.message}`);
+  }
 }
 
 // ── Main handler ────────────────────────────────────────────────────
@@ -175,6 +171,8 @@ export async function handleAgentJob(
     await handleSingleRepoAgent(jobData, updateProgress);
   }
 }
+
+// ── Discover mode ───────────────────────────────────────────────────
 
 async function handleDiscoverAgent(
   jobData: AuditJobData,
@@ -290,9 +288,11 @@ async function handleDiscoverAgent(
 
   const report = await runAgent(repos, config);
 
-  // ── Strip large fields and save (FIX: resultJson → summary) ──
-  const strippedReport = stripLargeFields(report);
-  const safeSummary = validatePayloadSize(strippedReport, "discover");
+  // ── Upload full report to R2 ──
+  await uploadReportToR2(jobData.auditJobId, report);
+
+  // ── Store only minimal summary in Postgres ──
+  const minimalSummary = buildMinimalSummary(report);
 
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
@@ -300,13 +300,14 @@ async function handleDiscoverAgent(
       status: "COMPLETED",
       progress: 100,
       stageName: "completed",
-      summary: safeSummary,
+      summary: minimalSummary,
     },
   });
 
   await updateProgress("completed", 100);
-  // Returns void — BullMQ stores return values in Redis; void avoids 91MB blow-up.
 }
+
+// ── Single repo mode ────────────────────────────────────────────────
 
 async function handleSingleRepoAgent(
   jobData: AuditJobData,
@@ -369,27 +370,17 @@ async function handleSingleRepoAgent(
   }
 
   const report = await runAgent(repos, config);
-
-  // Store advisory as artifact if we have one
   const run = report.runs[0];
+
+  // ── Upload full report to R2 ──
+  await uploadReportToR2(jobData.auditJobId, report);
+
+  // ── Upload advisory to R2 (actual content, not just DB record) ──
   if (run?.advisory) {
-    try {
-      await prisma.artifact.create({
-        data: {
-          auditJobId: jobData.auditJobId,
-          type: "ADVISORY",
-          name: `${owner}_${name}_advisory.md`,
-          contentType: "text/markdown",
-          size: Buffer.byteLength(run.advisory, "utf-8"),
-          storageKey: `advisories/${jobData.auditJobId}.md`,
-        },
-      });
-    } catch (e: any) {
-      console.warn(`[agent] Failed to store advisory artifact: ${e.message}`);
-    }
+    await uploadAdvisoryToR2(jobData.auditJobId, run.advisory, owner, name);
   }
 
-  // Store findings in DB
+  // ── Store findings in DB ──
   if (run?.pipelineResult?.findings) {
     for (const f of run.pipelineResult.findings) {
       try {
@@ -416,9 +407,8 @@ async function handleSingleRepoAgent(
     }
   }
 
-  // ── Strip large fields and save (FIX: resultJson → summary) ──
-  const strippedReport = stripLargeFields(report);
-  const safeSummary = validatePayloadSize(strippedReport, "single-repo");
+  // ── Store only minimal summary in Postgres ──
+  const minimalSummary = buildMinimalSummary(report);
 
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
@@ -426,10 +416,9 @@ async function handleSingleRepoAgent(
       status: run?.error ? "FAILED" : "COMPLETED",
       progress: 100,
       stageName: "completed",
-      summary: safeSummary,
+      summary: minimalSummary,
     },
   });
 
   await updateProgress("completed", 100);
-  // Returns void — BullMQ stores return values in Redis; void avoids 91MB blow-up.
 }
