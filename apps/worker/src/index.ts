@@ -10,7 +10,7 @@ import { getStorage } from "@solaudit/storage";
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "/tmp/solaudit-storage";
 const MAX_REPO_SIZE_MB = 200;
-const CLONE_TIMEOUT_MS = 60_000;
+const CLONE_TIMEOUT_MS = 120_000;
 
 function truncateError(err: unknown, max = 2000): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -180,6 +180,8 @@ const worker = new Worker<AuditJobData>(
     limiter: { max: 4, duration: 60_000 },
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 500 },
+    lockDuration: 600_000,
+    lockRenewTime: 30_000,
   }
 );
 
