@@ -589,7 +589,7 @@ export default function AgentPage() {
               {/* Job link */}
               <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--bg-dim)]">
                 <Link
-                  href={`/audit/${activeJob.jobId}`}
+                  href={`/audit/${activeJob.jobId}`} target="_blank"
                   className="text-[10px] font-mono text-[var(--accent)] hover:underline"
                 >
                   View full audit → {activeJob.jobId.slice(0, 8)}...
