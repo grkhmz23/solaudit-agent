@@ -6,6 +6,11 @@
  * - "audit" mode: Direct audit on specified repo URL
  *
  * Wires the full orchestrator into the BullMQ worker.
+ *
+ * FIXES (v2.1):
+ * - resultJson → summary (matches Prisma schema)
+ * - Strip file contents from report before saving (91MB → ~500KB)
+ *   to stay within Upstash Redis 10MB limit
  */
 
 import { prisma } from "@solaudit/db";
@@ -24,6 +29,135 @@ interface AgentJobConfig {
   submitPRs?: boolean;
 }
 
+// ── Payload stripping ──────────────────────────────────────────────
+// The orchestrator returns full file contents (source code) inside
+// pipelineResult.program.files[].content / .lines which can be 90MB+.
+// We strip those before persisting to Postgres and before BullMQ
+// stores the return value in Redis (Upstash 10MB limit).
+
+function stripLargeFields(report: any): any {
+  if (!report || typeof report !== "object") return report;
+
+  // Deep clone to avoid mutating the original
+  const stripped = JSON.parse(JSON.stringify(report));
+
+  if (Array.isArray(stripped.runs)) {
+    for (const run of stripped.runs) {
+      // Strip file contents from pipelineResult.program.files
+      if (run.pipelineResult?.program?.files) {
+        run.pipelineResult.program.files = run.pipelineResult.program.files.map(
+          (f: any) => ({
+            path: f.path,
+            language: f.language,
+            size: f.size ?? f.content?.length ?? 0,
+            lineCount: f.lineCount ?? f.lines?.length ?? 0,
+            // Drop: content, lines, ast, tokens — these are the massive fields
+          })
+        );
+      }
+
+      // Strip raw source from findings if embedded
+      if (Array.isArray(run.pipelineResult?.findings)) {
+        for (const finding of run.pipelineResult.findings) {
+          if (finding.sourceSnippet && finding.sourceSnippet.length > 2000) {
+            finding.sourceSnippet =
+              finding.sourceSnippet.slice(0, 2000) + "\n// ... truncated";
+          }
+        }
+      }
+
+      // Strip patches content if very large (keep first 5000 chars each)
+      if (Array.isArray(run.patches)) {
+        for (const patch of run.patches) {
+          if (patch.diff && patch.diff.length > 5000) {
+            patch.diff =
+              patch.diff.slice(0, 5000) +
+              "\n// ... truncated (full patch in PR)";
+          }
+        }
+      }
+
+      // Keep advisory as-is (it's generated markdown, typically <100KB)
+      // Keep enrichedFindings as-is (compact LLM summaries)
+    }
+  }
+
+  return stripped;
+}
+
+// Validate stripped payload is under a size limit (default 8MB, leaving 2MB headroom)
+function validatePayloadSize(
+  payload: any,
+  label: string,
+  maxBytes = 8 * 1024 * 1024
+): any {
+  const json = JSON.stringify(payload);
+  const size = Buffer.byteLength(json, "utf-8");
+  console.log(
+    `[agent] ${label} payload size: ${(size / 1024 / 1024).toFixed(2)} MB`
+  );
+
+  if (size > maxBytes) {
+    console.warn(
+      `[agent] ${label} still too large (${(size / 1024 / 1024).toFixed(2)} MB), ` +
+        `creating minimal summary instead`
+    );
+    return createMinimalSummary(payload);
+  }
+  return payload;
+}
+
+function createMinimalSummary(report: any): any {
+  const summary: any = {
+    _truncated: true,
+    _reason: "Payload exceeded 8MB limit, storing minimal summary",
+    totalFindings: 0,
+    runs: [],
+  };
+
+  if (Array.isArray(report.runs)) {
+    for (const run of report.runs) {
+      const runSummary: any = {
+        repoUrl: run.repoUrl,
+        owner: run.owner,
+        name: run.name,
+        error: run.error || null,
+        findingCount: run.pipelineResult?.findings?.length ?? 0,
+        enrichedCount: run.enrichedFindings?.length ?? 0,
+        patchCount: run.patches?.length ?? 0,
+        hasAdvisory: !!run.advisory,
+        prUrl: run.prUrl || null,
+        severityCounts: {} as Record<string, number>,
+      };
+
+      // Count by severity
+      if (Array.isArray(run.pipelineResult?.findings)) {
+        for (const f of run.pipelineResult.findings) {
+          const sev = f.severity || "unknown";
+          runSummary.severityCounts[sev] =
+            (runSummary.severityCounts[sev] || 0) + 1;
+        }
+        summary.totalFindings += run.pipelineResult.findings.length;
+      }
+
+      // Keep enriched finding titles/descriptions (compact)
+      if (Array.isArray(run.enrichedFindings)) {
+        runSummary.enrichedFindings = run.enrichedFindings.map((ef: any) => ({
+          title: ef.title,
+          severity: ef.severity,
+          description: ef.description?.slice(0, 500),
+        }));
+      }
+
+      summary.runs.push(runSummary);
+    }
+  }
+
+  return summary;
+}
+
+// ── Main handler ────────────────────────────────────────────────────
+
 export async function handleAgentJob(
   jobData: AuditJobData,
   updateProgress: (stage: string, pct: number) => Promise<void>
@@ -31,7 +165,6 @@ export async function handleAgentJob(
   const agentConfig = jobData.agentConfig as AgentJobConfig | undefined;
 
   if (!agentConfig) {
-    // Regular audit — run on the single repo
     await handleSingleRepoAgent(jobData, updateProgress);
     return;
   }
@@ -50,11 +183,10 @@ async function handleDiscoverAgent(
 ): Promise<void> {
   await updateProgress("discovering", 5);
 
-  // Use known protocols list as targets
   const protocols = getKnownProtocols();
   const repos = protocols.map((p) => {
-    const { score, reason } = scoreRepo({
-      stars: 500, // Default estimate
+    const { score } = scoreRepo({
+      stars: 500,
       forks: 100,
       topics: ["solana", p.category],
       updatedAt: new Date().toISOString(),
@@ -70,7 +202,6 @@ async function handleDiscoverAgent(
     };
   });
 
-  // If GitHub token available, get real star counts
   const ghToken = process.env.GITHUB_TOKEN;
   if (ghToken) {
     try {
@@ -83,7 +214,6 @@ async function handleDiscoverAgent(
         maxResults: 30,
       });
 
-      // Merge search results with known protocols
       for (const sr of searchResults) {
         const existing = repos.find(
           (r) => r.owner === sr.owner && r.name === sr.repo
@@ -122,7 +252,6 @@ async function handleDiscoverAgent(
     }
   }
 
-  // Sort by score and take top N
   repos.sort((a, b) => b.score - a.score);
   const maxRepos = agentConfig.maxRepos || 5;
 
@@ -138,12 +267,18 @@ async function handleDiscoverAgent(
     onProgress: async (step, detail) => {
       console.log(`[agent] ${step}: ${detail}`);
       const pctMap: Record<string, number> = {
-        clone: 20, audit: 30, pipeline: 40, patch: 50,
-        poc: 55, llm: 60, advisory: 70, pr: 80, done: 90,
+        clone: 20,
+        audit: 30,
+        pipeline: 40,
+        patch: 50,
+        poc: 55,
+        llm: 60,
+        advisory: 70,
+        pr: 80,
+        done: 90,
       };
       const pct = pctMap[step] || 50;
       await updateProgress(`agent_${step}`, pct);
-      // Update DB
       try {
         await prisma.auditJob.update({
           where: { id: jobData.auditJobId },
@@ -155,18 +290,22 @@ async function handleDiscoverAgent(
 
   const report = await runAgent(repos, config);
 
-  // Save results
+  // ── Strip large fields and save (FIX: resultJson → summary) ──
+  const strippedReport = stripLargeFields(report);
+  const safeSummary = validatePayloadSize(strippedReport, "discover");
+
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
     data: {
       status: "COMPLETED",
       progress: 100,
       stageName: "completed",
-      resultJson: JSON.stringify(report) as any,
+      summary: safeSummary,
     },
   });
 
   await updateProgress("completed", 100);
+  // Returns void — BullMQ stores return values in Redis; void avoids 91MB blow-up.
 }
 
 async function handleSingleRepoAgent(
@@ -177,7 +316,6 @@ async function handleSingleRepoAgent(
   const agentConfig = jobData.agentConfig as AgentJobConfig | undefined;
   const ghToken = process.env.GITHUB_TOKEN;
 
-  // Parse owner/name from URL
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/.\s]+)/);
   if (!match) {
     throw new Error(`Invalid repo URL: ${repoUrl}`);
@@ -197,9 +335,16 @@ async function handleSingleRepoAgent(
     onProgress: async (step, detail) => {
       console.log(`[agent] ${step}: ${detail}`);
       const pctMap: Record<string, number> = {
-        clone: 15, audit: 25, pipeline: 40, found: 45,
-        patch: 50, poc: 55, llm: 65, advisory: 75,
-        pr: 85, done: 95,
+        clone: 15,
+        audit: 25,
+        pipeline: 40,
+        found: 45,
+        patch: 50,
+        poc: 55,
+        llm: 65,
+        advisory: 75,
+        pr: 85,
+        done: 95,
       };
       const pct = pctMap[step] || 50;
       await updateProgress(`agent_${step}`, pct);
@@ -214,7 +359,6 @@ async function handleSingleRepoAgent(
 
   const repos = [{ url: repoUrl, owner, name, stars: 0, score: 0 }];
 
-  // Get real star count if GitHub token available
   if (ghToken) {
     try {
       const { GitHubClient } = await import("@solaudit/github");
@@ -245,12 +389,12 @@ async function handleSingleRepoAgent(
     }
   }
 
-  // Store findings
+  // Store findings in DB
   if (run?.pipelineResult?.findings) {
     for (const f of run.pipelineResult.findings) {
       try {
-        const enriched = run.enrichedFindings.find(
-          (e) => e.title === f.title || e.title.includes(f.className)
+        const enriched = run.enrichedFindings?.find(
+          (e: any) => e.title === f.title || e.title.includes(f.className)
         );
         await prisma.finding.create({
           data: {
@@ -272,15 +416,20 @@ async function handleSingleRepoAgent(
     }
   }
 
+  // ── Strip large fields and save (FIX: resultJson → summary) ──
+  const strippedReport = stripLargeFields(report);
+  const safeSummary = validatePayloadSize(strippedReport, "single-repo");
+
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
     data: {
       status: run?.error ? "FAILED" : "COMPLETED",
       progress: 100,
       stageName: "completed",
-      resultJson: JSON.stringify(report) as any,
+      summary: safeSummary,
     },
   });
 
   await updateProgress("completed", 100);
+  // Returns void — BullMQ stores return values in Redis; void avoids 91MB blow-up.
 }
