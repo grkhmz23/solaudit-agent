@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const API_KEY = process.env.API_KEY ?? "";
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
-
-// Fail closed: in production, if API_KEY is not set, reject everything
-if (IS_PRODUCTION && (!API_KEY || API_KEY.length < 16)) {
-  console.error("[FATAL] API_KEY is missing or too short in production. All requests will be rejected.");
+function getApiKeyConfig() {
+  const key = process.env.API_KEY ?? "";
+  const isProd = process.env.NODE_ENV === "production";
+  return { key, isProd };
 }
 
 export function validateApiKey(request: NextRequest): NextResponse | null {
-  // In production: fail closed — no valid key means deny all
+  const { key: API_KEY, isProd: IS_PRODUCTION } = getApiKeyConfig();
+
   if (IS_PRODUCTION && (!API_KEY || API_KEY.length < 16)) {
     return NextResponse.json(
       { error: "Server misconfigured: API key not set" },
@@ -17,7 +16,6 @@ export function validateApiKey(request: NextRequest): NextResponse | null {
     );
   }
 
-  // In dev: skip auth if key not configured
   if (!IS_PRODUCTION && !API_KEY) {
     return null;
   }
