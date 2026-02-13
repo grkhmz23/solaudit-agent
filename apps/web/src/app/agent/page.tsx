@@ -60,7 +60,7 @@ export default function AgentPage() {
     if (!polling) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/audits/${polling}`);
+        const res = await fetch(`/api/audits/${polling}`, { headers: apiKey ? { "x-api-key": apiKey } : {} });
         if (!res.ok) return;
         const data = await res.json();
         if (data.stageName) {
