@@ -47,7 +47,7 @@ interface JobTracker {
   jobId: string;
   repoUrl: string;
   repoShort: string;
-  status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
   progress: number;
   lastStage: string;
   lastDetail: string;
@@ -102,7 +102,7 @@ export default function AgentPage() {
 
     for (let i = 0; i < updates.length; i++) {
       const job = updates[i];
-      if (job.status === "COMPLETED" || job.status === "FAILED") continue;
+      if (job.status === "SUCCEEDED" || job.status === "FAILED") continue;
       anyActive = true;
 
       try {
@@ -161,8 +161,8 @@ export default function AgentPage() {
 
         job.progress = newProgress;
 
-        if (data.status === "COMPLETED") {
-          job.status = "COMPLETED";
+        if (data.status === "SUCCEEDED") {
+          job.status = "SUCCEEDED";
           job.progress = 100;
           if (job.logs[job.logs.length - 1]?.stage !== "completed") {
             const time = new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -173,7 +173,7 @@ export default function AgentPage() {
           const time = new Date().toLocaleTimeString("en-US", { hour12: false });
           job.logs.push({ time, stage: "agent:error", detail: data.error || "Job failed", progress: job.progress });
         } else {
-          job.status = "PROCESSING";
+          job.status = "RUNNING";
         }
       } catch {}
     }
@@ -490,7 +490,7 @@ export default function AgentPage() {
                   }`}
                 >
                   <span className="flex items-center justify-center gap-1.5">
-                    {j.status === "COMPLETED" ? (
+                    {j.status === "SUCCEEDED" ? (
                       <span className="text-green-400">✓</span>
                     ) : j.status === "FAILED" ? (
                       <span className="text-red-400">✗</span>
@@ -510,7 +510,7 @@ export default function AgentPage() {
               <div className="px-4 py-3 border-b border-[var(--border)]">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    {activeJob.status === "COMPLETED" ? (
+                    {activeJob.status === "SUCCEEDED" ? (
                       <span className="w-2 h-2 rounded-full bg-green-400" />
                     ) : activeJob.status === "FAILED" ? (
                       <span className="w-2 h-2 rounded-full bg-red-400" />
@@ -521,7 +521,7 @@ export default function AgentPage() {
                       {activeJob.repoShort}
                     </span>
                     <span className="text-[10px] text-[var(--fg-dim)]">
-                      {activeJob.status === "COMPLETED"
+                      {activeJob.status === "SUCCEEDED"
                         ? "completed"
                         : activeJob.status === "FAILED"
                         ? "failed"
@@ -545,7 +545,7 @@ export default function AgentPage() {
                     style={{
                       width: `${activeJob.progress}%`,
                       backgroundColor:
-                        activeJob.status === "COMPLETED"
+                        activeJob.status === "SUCCEEDED"
                           ? "#22c55e"
                           : activeJob.status === "FAILED"
                           ? "#ef4444"
@@ -574,7 +574,7 @@ export default function AgentPage() {
                 })}
 
                 {/* Current activity indicator */}
-                {activeJob.status !== "COMPLETED" && activeJob.status !== "FAILED" && (
+                {activeJob.status !== "SUCCEEDED" && activeJob.status !== "FAILED" && (
                   <div className="flex gap-2 py-0.5 opacity-60">
                     <span className="text-[var(--fg-dim)] shrink-0 w-[52px]" />
                     <span className="shrink-0 w-4 text-center">
@@ -601,12 +601,12 @@ export default function AgentPage() {
       )}
 
       {/* Summary when all done */}
-      {jobs.length > 0 && jobs.every((j) => j.status === "COMPLETED" || j.status === "FAILED") && (
+      {jobs.length > 0 && jobs.every((j) => j.status === "SUCCEEDED" || j.status === "FAILED") && (
         <div className="p-4 rounded-lg border border-green-800/30 bg-green-900/10 mb-4">
           <p className="text-xs font-semibold text-green-400 mb-2">Agent Run Complete</p>
           <div className="flex gap-4 text-[11px] font-mono">
             <span className="text-[var(--fg-muted)]">
-              {jobs.filter((j) => j.status === "COMPLETED").length}/{jobs.length} succeeded
+              {jobs.filter((j) => j.status === "SUCCEEDED").length}/{jobs.length} succeeded
             </span>
             <span className="text-[var(--fg-muted)]">
               {elapsed(jobs[0]?.startedAt || Date.now())} total
@@ -618,12 +618,12 @@ export default function AgentPage() {
                 key={j.jobId}
                 href={`/audit/${j.jobId}`}
                 className={`px-2 py-1 rounded text-[10px] font-mono border ${
-                  j.status === "COMPLETED"
+                  j.status === "SUCCEEDED"
                     ? "border-green-800/50 text-green-400 bg-green-900/20"
                     : "border-red-800/50 text-red-400 bg-red-900/20"
                 } hover:brightness-110`}
               >
-                {j.repoShort.split("/").pop()} {j.status === "COMPLETED" ? "✓" : "✗"}
+                {j.repoShort.split("/").pop()} {j.status === "SUCCEEDED" ? "✓" : "✗"}
               </Link>
             ))}
           </div>
