@@ -1,0 +1,64 @@
+~/workspace$ kill %1 2>/dev/null; node start.js
+ ⨯ Failed to start server
+Error: listen EADDRINUSE: address already in use 0.0.0.0:5000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at doListen (node:net:2139:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:83:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '0.0.0.0',
+  port: 5000
+}
+[web] exited 1
+~/workspace$ pkill -f "next start" ; pkill -f "node apps/worker" ; sleep 2 ; node start.js
+ ⨯ Failed to start server
+Error: listen EADDRINUSE: address already in use 0.0.0.0:5000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at doListen (node:net:2139:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:83:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '0.0.0.0',
+  port: 5000
+}
+[web] exited 1
+~/workspace$ fuser -k 5000/tcp 3000/tcp ; sleep 2 ; node start.js
+fuser: command not installed, but was located via Nix.
+package: psmisc  23.7  A set of small useful utilities that use the proc filesystem (such as fuser, killall and pstree)
+Would you like to run fuser from Nix and add it to your project? [Yn]: y
+psmisc  23.7  A set of small useful utilities that use the proc filesystem (such as fuser, killall and pstree)
+Adding psmisc to .replit
+5000/tcp:            19032
+ ⨯ Failed to start server
+Error: listen EADDRINUSE: address already in use 0.0.0.0:5000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at doListen (node:net:2139:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:83:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '0.0.0.0',
+  port: 5000
+}
+[web] exited 1
+~/workspace$ kill -9 $(lsof -t -i:5000 -i:3000) 2>/dev/null ; sleep 3 ; node start.js
+bash: lsof: command not found
+ ⨯ Failed to start server
+Error: listen EADDRINUSE: address already in use 0.0.0.0:5000
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at doListen (node:net:2139:7)
+    at process.processTicksAndRejections (node:internal/process/task_queues:83:21) {
+  code: 'EADDRINUSE',
+  errno: -98,
+  syscall: 'listen',
+  address: '0.0.0.0',
+  port: 5000
+}
+[web] exited 1
+~/workspace$ 
