@@ -111,9 +111,10 @@ export default function AgentPage() {
         const res = await fetch(`/api/audits/${job.jobId}`, { headers });
         if (!res.ok) continue;
         const data = await res.json();
+        const audit = data.audit || data;
 
-        const newStage = data.stageName || "";
-        const newProgress = data.progress || 0;
+        const newStage = audit.stageName || "";
+        const newProgress = audit.progress || 0;
 
         // Only add log if stage changed
         if (newStage && newStage !== job.lastStage) {
@@ -161,17 +162,17 @@ export default function AgentPage() {
 
         job.progress = newProgress;
 
-        if (data.status === "SUCCEEDED") {
+        if (audit.status === "SUCCEEDED") {
           job.status = "SUCCEEDED";
           job.progress = 100;
           if (job.logs[job.logs.length - 1]?.stage !== "completed") {
             const time = new Date().toLocaleTimeString("en-US", { hour12: false });
             job.logs.push({ time, stage: "completed", detail: "Agent run finished", progress: 100 });
           }
-        } else if (data.status === "FAILED") {
+        } else if (audit.status === "FAILED") {
           job.status = "FAILED";
           const time = new Date().toLocaleTimeString("en-US", { hour12: false });
-          job.logs.push({ time, stage: "agent:error", detail: data.error || "Job failed", progress: job.progress });
+          job.logs.push({ time, stage: "agent:error", detail: audit.error || "Job failed", progress: job.progress });
         } else {
           job.status = "RUNNING";
         }
@@ -238,6 +239,7 @@ export default function AgentPage() {
       });
 
       const data = await res.json();
+        const audit = data.audit || data;
       if (!res.ok) throw new Error(data.error || "Failed");
 
       // Build job trackers
