@@ -415,7 +415,7 @@ async function handleSingleRepoAgent(
   await prisma.auditJob.update({
     where: { id: jobData.auditJobId },
     data: {
-      status: run?.error ? "FAILED" : "SUCCEEDED",
+      status: (run?.error && !run?.pipelineResult?.findings?.length) ? "FAILED" : "SUCCEEDED",
       progress: 100,
       stageName: "completed",
       summary: minimalSummary,
