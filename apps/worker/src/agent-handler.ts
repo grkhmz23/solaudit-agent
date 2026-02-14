@@ -70,6 +70,7 @@ function buildMinimalSummary(report: any): any {
         hasAdvisory: !!run.advisory,
         hasSubmissionDoc: !!run.submissionDoc,
         prUrl: run.prUrl || null,
+        writeupUrl: run.writeupUrl || null,
         durationMs: run.durationMs || null,
         severityCounts: {} as Record<string, number>,
       };
@@ -303,12 +304,16 @@ async function handleDiscoverAgent(
         audit: 28,
         pipeline: 36,
         patch: 44,
-        poc: 48,
+        patch_author: 45,
+        patch_validate: 48,
+        patch_retry: 49,
+        poc: 52,
         llm: 55,
         poc_gen: 63,
         advisory: 70,
         submission_doc: 76,
         pr: 82,
+        writeup: 86,
         done: 90,
       };
       const pct = pctMap[step] || 50;
@@ -387,12 +392,16 @@ async function handleSingleRepoAgent(
         pipeline: 35,
         found: 40,
         patch: 45,
-        poc: 50,
+        patch_author: 47,
+        patch_validate: 50,
+        patch_retry: 52,
+        poc: 55,
         llm: 58,
         poc_gen: 66,
         advisory: 72,
         submission_doc: 78,
         pr: 85,
+        writeup: 90,
         done: 95,
       };
       const pct = pctMap[step] || 50;

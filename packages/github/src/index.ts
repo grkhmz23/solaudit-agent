@@ -222,6 +222,45 @@ export class GitHubClient {
   }
 
   /**
+   * Create a public GitHub Gist.
+   */
+  async createGist(
+    filename: string,
+    content: string,
+    description: string,
+    isPublic: boolean = true,
+  ): Promise<{ gistUrl: string; rawUrl: string; gistId: string }> {
+    const { data } = await this.octokit.gists.create({
+      description,
+      public: isPublic,
+      files: { [filename]: { content } },
+    });
+    const file = data.files?.[filename];
+    return {
+      gistUrl: data.html_url || "",
+      rawUrl: file?.raw_url || "",
+      gistId: data.id || "",
+    };
+  }
+
+  /**
+   * Publish a bounty writeup as a public Gist.
+   * Returns a permanent URL suitable for submission.
+   */
+  async publishWriteup(
+    repoOwner: string,
+    repoName: string,
+    writeupMarkdown: string,
+  ): Promise<{ gistUrl: string; rawUrl: string }> {
+    const filename = `solaudit-${repoOwner}-${repoName}-writeup.md`;
+    const description = `[SolAudit] Security audit writeup for ${repoOwner}/${repoName}`;
+    console.log(`[github] Publishing writeup gist: ${filename}`);
+    const result = await this.createGist(filename, writeupMarkdown, description, true);
+    console.log(`[github] Writeup gist: ${result.gistUrl}`);
+    return result;
+  }
+
+  /**
    * Search for popular Solana repositories
    */
   async searchSolanaRepos(opts: { minStars?: number; maxResults?: number }): Promise<RepoInfo[]> {

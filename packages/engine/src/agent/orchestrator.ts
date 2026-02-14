@@ -62,6 +62,7 @@ export interface AgentRun {
   advisory: string | null;
   submissionDoc: string | null;
   prUrl: string | null;
+  writeupUrl: string | null;
   error: string | null;
   durationMs: number;
 }
@@ -117,6 +118,7 @@ export async function runAgent(
       advisory: null,
       submissionDoc: null,
       prUrl: null,
+      writeupUrl: null,
       error: null,
       durationMs: 0,
     };
@@ -337,6 +339,20 @@ export async function runAgent(
           }
         } else if (config.submitPRs && validatedPatches.length === 0) {
           await progress("pr", "Skipped PR: no validated patches to submit");
+        }
+
+        // —— V2 Step 7: Publish writeup as GitHub Gist ——
+        if (config.githubToken && run.submissionDoc) {
+          await progress("writeup", "Publishing writeup to GitHub Gist...");
+          try {
+            const { GitHubClient } = await import("@solaudit/github");
+            const gh = new GitHubClient(config.githubToken);
+            const gist = await gh.publishWriteup(repo.owner, repo.name, run.submissionDoc);
+            run.writeupUrl = gist.gistUrl;
+            await progress("writeup", `Writeup published: ${gist.gistUrl}`);
+          } catch (gistErr: any) {
+            await progress("writeup_error", `Gist failed: ${gistErr.message}`);
+          }
         }
 
         await progress("done", `Completed ${repo.owner}/${repo.name}`);
