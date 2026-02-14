@@ -80,7 +80,7 @@ async function callLLM(system: string, user: string): Promise<string> {
         body: JSON.stringify({
           model: MOONSHOT_MODEL,
           max_tokens: POC_CFG.maxTokens,
-          temperature: 0.3,
+          temperature: 1,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
