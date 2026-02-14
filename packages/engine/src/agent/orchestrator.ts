@@ -347,7 +347,7 @@ export async function runAgent(
           try {
             const { GitHubClient } = await import("@solaudit/github");
             const gh = new GitHubClient(config.githubToken);
-            const gist = await gh.publishWriteup(repo.owner, repo.name, run.submissionDoc);
+            const gist = await (gh as any).publishWriteup(repo.owner, repo.name, run.submissionDoc);
             run.writeupUrl = gist.gistUrl;
             await progress("writeup", `Writeup published: ${gist.gistUrl}`);
           } catch (gistErr: any) {
