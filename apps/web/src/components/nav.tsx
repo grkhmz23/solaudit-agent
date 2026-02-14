@@ -5,8 +5,6 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/dashboard", label: "audits" },
   { href: "/audit/new", label: "new" },
-  { href: "/settings", label: "config" },
-  { href: "/agent", label: "agent" },
 ];
 
 export function Nav() {
@@ -35,7 +33,7 @@ export function Nav() {
                 className={`px-2.5 py-1 rounded text-xs mono transition-colors ${
                   active
                     ? "text-[var(--fg)] bg-white/[0.04]"
-                    : "text-[var(--fg-muted)] hover:text-[var(--fg-dim)] hover:text-[var(--fg)]"
+                    : "text-[var(--fg-muted)] hover:text-[var(--fg)]"
                 }`}
               >
                 {link.label}
