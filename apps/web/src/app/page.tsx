@@ -22,30 +22,29 @@ const CLASSES = [
 ];
 
 const PIPELINE = [
-  { id: "parse", label: "Parse & AST", time: "~2s" },
-  { id: "detect", label: "15 Detectors", time: "~8s" },
-  { id: "graph", label: "Graph Mining", time: "~3s" },
-  { id: "adversarial", label: "Adversarial Synth", time: "~4s" },
-  { id: "proof", label: "Proof Plans", time: "~5s" },
-  { id: "fix", label: "Remediation", time: "~3s" },
-  { id: "report", label: "Report Gen", time: "~1s" },
+  { id: "parse", label: "tree-sitter Parse", time: "~12s" },
+  { id: "candidates", label: "Sink-first Candidates", time: "~1s" },
+  { id: "llm", label: "LLM Confirm/Reject", time: "~3m" },
+  { id: "poc", label: "PoC Validation", time: "~30s" },
+  { id: "report", label: "Advisory Gen", time: "~2s" },
+  { id: "patch", label: "Patch + PR", time: "~5s" },
 ];
 
 function TerminalBlock() {
   const [lines, setLines] = useState<string[]>([]);
   const allLines = [
-    "$ solaudit scan --repo anchor-escrow",
-    "[parse] anchor framework detected",
-    "[parse] 4 instructions, 6 account structs",
-    "[detect] running 15 vulnerability detectors...",
-    "[detect] CRITICAL: missing signer check @ initialize:L42",
-    "[detect] HIGH: PDA seed mismatch @ withdraw:L87",
-    "[detect] MEDIUM: unchecked CPI return @ transfer:L63",
-    "[graph] authority-flow: 8 nodes, 12 edges",
-    "[graph] token-flow: 5 nodes, 7 edges",
-    "[proof] generating exploit harness for 3 findings",
-    "[fix] remediation plan: 3 patches, 5 regression tests",
-    "[report] audit complete. verdict: DO NOT SHIP",
+    "$ solaudit scan --repo anchor-escrow --engine v2",
+    "[v2] tree-sitter parsing 4 instructions, 6 account structs",
+    "[v2] extracted 12 sinks, 3 CPI calls, 8 PDA derivations",
+    "[v2] generating candidates (sink-first)...",
+    "[v2] CRITICAL: arbitrary CPI target @ transfer:L42",
+    "[v2] HIGH: missing owner check @ withdraw:L87",
+    "[v2] MEDIUM: PDA bump not validated @ claim:L63",
+    "[v2-llm] triaging 12 candidates → selecting top 6",
+    "[v2-llm] deep investigating 6 candidates...",
+    "[v2-llm] confirmed: 2 | rejected: 3 | uncertain: 1",
+    "[agent] generating security advisory...",
+    "[report] audit complete. 2 confirmed vulnerabilities",
   ];
 
   useEffect(() => {
@@ -80,10 +79,12 @@ function TerminalBlock() {
               <span className="text-orange-400">{line}</span>
             ) : line.includes("MEDIUM") ? (
               <span className="text-yellow-400">{line}</span>
-            ) : line.includes("DO NOT SHIP") ? (
-              <span className="text-red-400 font-semibold">{line}</span>
+            ) : line.includes("confirmed") ? (
+              <span className="text-emerald-400">{line}</span>
             ) : line.includes("complete") ? (
               <span className="text-[var(--accent)]">{line}</span>
+            ) : line.includes("[v2-llm]") ? (
+              <span className="text-pink-400">{line}</span>
             ) : (
               <span className="text-[var(--fg-muted)]">{line}</span>
             )}
@@ -114,9 +115,9 @@ export default function HomePage() {
           </h1>
           
           <p className="mt-4 text-[var(--fg-muted)] text-sm max-w-lg mx-auto leading-relaxed">
-            Static analysis, semantic graph mining, adversarial account synthesis,
-            proof-of-concept generation, and automated remediation planning.
-            15 vulnerability classes. One pipeline.
+            Tree-sitter AST parsing, LLM-powered confirmation, semantic graph mining,
+            adversarial account synthesis, and automated remediation.
+            15 vulnerability classes. V2 engine.
           </p>
 
           <div className="flex gap-3 justify-center mt-8">
@@ -147,7 +148,7 @@ export default function HomePage() {
       <section className="py-12 fade-up-d2">
         <div className="text-center mb-8">
           <h2 className="text-lg font-semibold">Pipeline</h2>
-          <p className="text-xs text-[var(--fg-dim)] mt-1 mono">7-stage sequential analysis</p>
+          <p className="text-xs text-[var(--fg-dim)] mt-1 mono">V2: 6-phase AST-native analysis</p>
         </div>
         <div className="max-w-3xl mx-auto flex flex-wrap justify-center gap-px">
           {PIPELINE.map((stage, i) => (

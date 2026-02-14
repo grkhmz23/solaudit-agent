@@ -9,6 +9,26 @@ import { GraphViewer } from "@/components/graph-viewer";
 
 type Tab = "summary" | "findings" | "graphs" | "artifacts";
 
+function formatDuration(start: string | null, end: string | null): string {
+  if (!start || !end) return "—";
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (ms < 60_000) return `${(ms / 1000).toFixed(0)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function ProofBadge({ status }: { status: string }) {
+  const map: Record<string, { cls: string; label: string }> = {
+    PROVEN: { cls: "bg-emerald-950/80 text-emerald-400 border-emerald-900", label: "PROVEN" },
+    LIKELY: { cls: "bg-yellow-950/80 text-yellow-400 border-yellow-900", label: "LIKELY" },
+    NEEDS_HUMAN: { cls: "bg-orange-950/80 text-orange-400 border-orange-900", label: "NEEDS REVIEW" },
+    REJECTED: { cls: "bg-zinc-900 text-zinc-500 border-zinc-800", label: "REJECTED" },
+  };
+  const s = map[status] ?? { cls: "bg-zinc-900 text-zinc-400 border-zinc-800", label: status };
+  return <span className={`badge ${s.cls}`}>{s.label}</span>;
+}
+
 export default function AuditDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { audit, loading, error } = useAudit(id);
@@ -34,7 +54,6 @@ export default function AuditDetailPage() {
 
   const isRunning = audit.status === "RUNNING";
   const graphArtifacts = audit.artifacts.filter((a) => a.type === "GRAPH");
-  const reportArtifacts = audit.artifacts.filter((a) => a.type === "REPORT");
 
   const severityCounts: Record<string, number> = {};
   for (const f of audit.findings) {
@@ -52,9 +71,19 @@ export default function AuditDetailPage() {
     <div>
       {/* Header */}
       <div className="mb-6">
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
           <StatusBadge status={audit.status} />
           <span className="badge badge-info">{audit.mode}</span>
+          {audit.summary?.engineVersion && (
+            <span className="badge bg-purple-950/80 text-purple-400 border-purple-900">
+              {audit.summary.engineVersion.toUpperCase()} engine
+            </span>
+          )}
+          {audit.finishedAt && audit.startedAt && (
+            <span className="mono text-[10px] text-[var(--fg-dim)]">
+              {formatDuration(audit.startedAt, audit.finishedAt)}
+            </span>
+          )}
         </div>
         <h1 className="text-lg font-semibold mono">
           {audit.repoSource === "url" ? repoShortName(audit.repoUrl) : "uploaded archive"}
@@ -111,23 +140,57 @@ function SummaryTab({ audit, counts }: { audit: any; counts: Record<string, numb
     <div className="space-y-4">
       {s && (
         <Card>
-          <div className="flex items-center gap-2 mb-4">
-            <div className={`w-2 h-2 rounded-full ${s.shipReady ? "bg-[var(--accent)]" : "bg-red-400"}`} />
-            <span className="text-sm font-semibold mono">
-              {s.shipReady ? "SHIP" : "DO NOT SHIP"}
-            </span>
+          <div className="flex items-center gap-3 mb-4">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-lg ${
+              s.shipReady ? "bg-emerald-950/50 border border-emerald-900" : "bg-red-950/50 border border-red-900"
+            }`}>
+              {s.shipReady ? "✓" : "✗"}
+            </div>
+            <div>
+              <span className={`text-sm font-bold mono ${s.shipReady ? "text-[var(--accent)]" : "text-red-400"}`}>
+                {s.shipReady ? "SHIP READY" : "DO NOT SHIP"}
+              </span>
+              <p className="text-[10px] text-[var(--fg-dim)] mono mt-0.5">{audit.findings.length} findings analyzed</p>
+            </div>
           </div>
-          <p className="text-xs text-[var(--fg-muted)] mb-4">{s.recommendation}</p>
+          <p className="text-xs text-[var(--fg-muted)] mb-4 leading-relaxed">{s.recommendation}</p>
           <div className="grid grid-cols-5 gap-1.5">
-            {(["CRITICAL","HIGH","MEDIUM","LOW","INFO"] as const).map((sev) => (
-              <div key={sev} className="text-center p-2 rounded bg-[var(--bg)] border border-[var(--border)]">
-                <p className="text-lg font-bold mono">{counts[sev] ?? 0}</p>
-                <SeverityBadge severity={sev} />
-              </div>
-            ))}
+            {(["CRITICAL","HIGH","MEDIUM","LOW","INFO"] as const).map((sev) => {
+              const count = counts[sev] ?? 0;
+              return (
+                <div key={sev} className={`text-center p-2.5 rounded border transition-colors ${
+                  count > 0 ? "bg-[var(--bg)] border-[var(--border)]" : "bg-[var(--bg)] border-[var(--border)] opacity-40"
+                }`}>
+                  <p className="text-xl font-bold mono">{count}</p>
+                  <SeverityBadge severity={sev} />
+                </div>
+              );
+            })}
           </div>
         </Card>
       )}
+
+      {/* V2 Engine Metrics */}
+      {s?.v2Metrics && (
+        <Card>
+          <span className="text-xs mono text-[var(--fg-muted)] block mb-3">V2 engine metrics</span>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="text-center p-2.5 bg-[var(--bg)] rounded border border-[var(--border)]">
+              <p className="text-lg font-bold mono text-[var(--accent)]">{s.v2Metrics.candidatesGenerated ?? "—"}</p>
+              <p className="text-[10px] mono text-[var(--fg-dim)]">candidates</p>
+            </div>
+            <div className="text-center p-2.5 bg-[var(--bg)] rounded border border-[var(--border)]">
+              <p className="text-lg font-bold mono text-emerald-400">{s.v2Metrics.confirmed ?? "—"}</p>
+              <p className="text-[10px] mono text-[var(--fg-dim)]">confirmed</p>
+            </div>
+            <div className="text-center p-2.5 bg-[var(--bg)] rounded border border-[var(--border)]">
+              <p className="text-lg font-bold mono text-zinc-500">{s.v2Metrics.rejected ?? "—"}</p>
+              <p className="text-[10px] mono text-[var(--fg-dim)]">rejected</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card>
         <span className="text-xs mono text-[var(--fg-muted)] block mb-3">details</span>
         <dl className="grid grid-cols-2 gap-y-2 text-xs">
@@ -139,6 +202,7 @@ function SummaryTab({ audit, counts }: { audit: any; counts: Record<string, numb
           <dd className="text-[var(--fg-muted)] mono">{new Date(audit.createdAt).toLocaleString()}</dd>
           {audit.startedAt && (<><dt className="text-[var(--fg-dim)] mono">started</dt><dd className="text-[var(--fg-muted)] mono">{new Date(audit.startedAt).toLocaleString()}</dd></>)}
           {audit.finishedAt && (<><dt className="text-[var(--fg-dim)] mono">finished</dt><dd className="text-[var(--fg-muted)] mono">{new Date(audit.finishedAt).toLocaleString()}</dd></>)}
+          {audit.startedAt && audit.finishedAt && (<><dt className="text-[var(--fg-dim)] mono">duration</dt><dd className="text-[var(--fg-muted)] mono">{formatDuration(audit.startedAt, audit.finishedAt)}</dd></>)}
           {s && (<>
             <dt className="text-[var(--fg-dim)] mono">framework</dt><dd className="text-[var(--fg-muted)]">{s.framework}</dd>
             <dt className="text-[var(--fg-dim)] mono">instructions</dt><dd className="text-[var(--fg-muted)]">{s.instructionCount}</dd>
@@ -160,7 +224,7 @@ function FindingsTab({ findings, selected, onSelect }: { findings: Finding[]; se
     return (
       <div>
         <button onClick={() => onSelect(null)} className="text-xs mono text-[var(--accent)] hover:brightness-110 mb-4 flex items-center gap-1">
-          &#8592; back
+          &#8592; back to findings
         </button>
         <FindingDetail finding={selected} />
       </div>
@@ -170,19 +234,25 @@ function FindingsTab({ findings, selected, onSelect }: { findings: Finding[]; se
   return (
     <div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
-        {["ALL","CRITICAL","HIGH","MEDIUM","LOW","INFO"].map((s) => (
-          <button
-            key={s}
-            onClick={() => setFilter(s)}
-            className={`px-2.5 py-1 text-[11px] mono rounded border transition-colors ${
-              filter === s
-                ? "border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]"
-                : "border-[var(--border)] text-[var(--fg-dim)] hover:text-[var(--fg-muted)]"
-            }`}
-          >
-            {s}{s !== "ALL" && ` (${findings.filter((f) => f.severity === s).length})`}
-          </button>
-        ))}
+        {["ALL","CRITICAL","HIGH","MEDIUM","LOW","INFO"].map((s) => {
+          const count = s === "ALL" ? findings.length : findings.filter((f) => f.severity === s).length;
+          return (
+            <button
+              key={s}
+              onClick={() => setFilter(s)}
+              className={`px-2.5 py-1 text-[11px] mono rounded border transition-colors ${
+                filter === s
+                  ? "border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]"
+                  : count === 0
+                    ? "border-[var(--border)] text-[var(--fg-dim)] opacity-40 cursor-default"
+                    : "border-[var(--border)] text-[var(--fg-dim)] hover:text-[var(--fg-muted)]"
+              }`}
+              disabled={count === 0 && s !== "ALL"}
+            >
+              {s} ({count})
+            </button>
+          );
+        })}
       </div>
       {filtered.length === 0 ? (
         <Card><p className="text-[var(--fg-dim)] text-center text-xs mono py-8">no findings match filter</p></Card>
@@ -194,16 +264,22 @@ function FindingsTab({ findings, selected, onSelect }: { findings: Finding[]; se
               onClick={() => onSelect(f)}
               className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg px-4 py-3 card-hover cursor-pointer"
             >
-              <div className="flex items-center gap-2 mb-1">
-                <SeverityBadge severity={f.severity} />
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <SeverityBadge severity={f.severity} />
+                  <ProofBadge status={f.proofStatus} />
+                  <span className="mono text-[10px] text-[var(--fg-dim)]">{(f.confidence * 100).toFixed(0)}% conf</span>
+                </div>
                 <span className="mono text-[10px] text-[var(--fg-dim)]">#{f.classId}</span>
-                <span className="mono text-[10px] text-[var(--fg-dim)]">{(f.confidence * 100).toFixed(0)}%</span>
               </div>
-              <p className="text-xs text-[var(--fg)]">{f.title}</p>
+              <p className="text-xs text-[var(--fg)] font-medium">{f.title}</p>
               <p className="mono text-[10px] text-[var(--fg-dim)] mt-1">
                 {f.location.file}:{f.location.line}
                 {f.location.instruction ? ` @ ${f.location.instruction}` : ""}
               </p>
+              {f.hypothesis && (
+                <p className="text-[11px] text-[var(--fg-dim)] mt-1.5 line-clamp-2">{f.hypothesis}</p>
+              )}
             </div>
           ))}
         </div>
@@ -260,20 +336,31 @@ function ArtifactsTab({ artifacts }: { artifacts: Artifact[] }) {
     return <Card><p className="text-[var(--fg-dim)] text-center text-xs mono py-8">no artifacts</p></Card>;
   }
 
+  const typeIcon: Record<string, string> = {
+    REPORT: "📄",
+    GRAPH: "📊",
+    ADVISORY: "🛡",
+    SUBMISSION: "📨",
+    POC: "🧪",
+  };
+
   return (
     <div className="space-y-1.5">
       {artifacts.map((a) => (
         <div key={a.id} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-lg px-4 py-3 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-[var(--fg)]">{a.name}</p>
-            <p className="mono text-[10px] text-[var(--fg-dim)] mt-0.5">
-              {a.type} / {a.contentType} / {a.sizeBytes ? `${(a.sizeBytes / 1024).toFixed(1)}KB` : "?"}
-            </p>
+          <div className="flex items-center gap-3">
+            <span className="text-base">{typeIcon[a.type] ?? "📎"}</span>
+            <div>
+              <p className="text-xs text-[var(--fg)]">{a.name}</p>
+              <p className="mono text-[10px] text-[var(--fg-dim)] mt-0.5">
+                {a.type} / {a.contentType} {a.sizeBytes ? `/ ${(a.sizeBytes / 1024).toFixed(1)}KB` : ""}
+              </p>
+            </div>
           </div>
           <button
             onClick={() => download(a.id)}
             disabled={downloading === a.id}
-            className="px-2.5 py-1 text-[11px] mono border border-[var(--border)] rounded text-[var(--fg-muted)] hover:text-[var(--fg)] hover:border-[var(--border-hover)] transition-colors disabled:opacity-40"
+            className="px-3 py-1.5 text-[11px] mono border border-[var(--border)] rounded text-[var(--fg-muted)] hover:text-[var(--fg)] hover:border-[var(--accent)] transition-colors disabled:opacity-40"
           >
             {downloading === a.id ? "..." : "download"}
           </button>

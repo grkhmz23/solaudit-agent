@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { validateApiKey, errorResponse } from "@/lib/api-key";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { enqueueAudit } from "@/lib/queue";
 import crypto from "crypto";
 
@@ -66,6 +67,19 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const authErr = validateApiKey(request);
   if (authErr) return authErr;
+
+  // Rate limit: 5 audits per hour per IP in public mode
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    || request.headers.get("x-real-ip")
+    || "unknown";
+  const limit = checkRateLimit(ip);
+  if (!limit.allowed) {
+    const retryAfter = Math.ceil((limit.resetAt - Date.now()) / 1000);
+    return NextResponse.json(
+      { error: `Rate limit exceeded. Try again in ${Math.ceil(retryAfter / 60)} minutes.` },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
 
   try {
     const body = await request.json();

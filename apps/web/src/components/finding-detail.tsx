@@ -3,13 +3,39 @@
 import type { Finding } from "@/lib/hooks";
 import { SeverityBadge, Card } from "@/components/ui";
 
+function ProofBadge({ status }: { status: string }) {
+  const map: Record<string, { cls: string; label: string }> = {
+    PROVEN: { cls: "bg-emerald-950/80 text-emerald-400 border-emerald-900", label: "PROVEN" },
+    LIKELY: { cls: "bg-yellow-950/80 text-yellow-400 border-yellow-900", label: "LIKELY" },
+    NEEDS_HUMAN: { cls: "bg-orange-950/80 text-orange-400 border-orange-900", label: "NEEDS REVIEW" },
+    REJECTED: { cls: "bg-zinc-900 text-zinc-500 border-zinc-800", label: "REJECTED" },
+  };
+  const s = map[status] ?? { cls: "bg-zinc-900 text-zinc-400 border-zinc-800", label: status };
+  return <span className={`badge ${s.cls}`}>{s.label}</span>;
+}
+
+function ExploitabilityBadge({ level }: { level: string }) {
+  const map: Record<string, string> = {
+    easy: "text-red-400",
+    moderate: "text-orange-400",
+    hard: "text-yellow-400",
+    unknown: "text-zinc-500",
+  };
+  return (
+    <span className={`mono text-[11px] ${map[level] ?? "text-zinc-500"}`}>
+      {level}
+    </span>
+  );
+}
+
 export function FindingDetail({ finding }: { finding: Finding }) {
   return (
     <div className="space-y-3">
       {/* Header */}
       <Card>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
           <SeverityBadge severity={finding.severity} />
+          <ProofBadge status={finding.proofStatus} />
           <span className="mono text-[10px] text-[var(--fg-dim)]">
             #{finding.classId} {finding.className}
           </span>
@@ -19,21 +45,30 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           {finding.location.file}:{finding.location.line}
           {finding.location.instruction ? ` @ ${finding.location.instruction}` : ""}
         </p>
-        <div className="mt-3 flex items-center gap-4 text-[11px] mono">
+        <div className="mt-3 flex items-center gap-4 text-[11px] mono flex-wrap">
           <span className="text-[var(--fg-dim)]">
-            confidence <span className="text-[var(--fg-muted)]">{(finding.confidence * 100).toFixed(0)}%</span>
+            confidence <span className="text-[var(--fg-muted)] font-semibold">{(finding.confidence * 100).toFixed(0)}%</span>
           </span>
           <span className="text-[var(--fg-dim)]">
-            proof <span className="text-[var(--fg-muted)]">{finding.proofStatus}</span>
+            exploitability{" "}
+            <ExploitabilityBadge level={(finding as any).exploitability ?? "unknown"} />
           </span>
         </div>
       </Card>
 
-      {/* Hypothesis */}
+      {/* Hypothesis / Impact */}
       {finding.hypothesis && (
         <Card>
-          <span className="text-[11px] mono text-[var(--fg-dim)] block mb-2">exploit hypothesis</span>
+          <span className="text-[11px] mono text-[var(--fg-dim)] block mb-2">impact</span>
           <p className="text-xs text-[var(--fg-muted)] leading-relaxed">{finding.hypothesis}</p>
+        </Card>
+      )}
+
+      {/* LLM Reasoning (V2) */}
+      {(finding as any).reasoning && (
+        <Card>
+          <span className="text-[11px] mono text-[var(--fg-dim)] block mb-2">LLM analysis</span>
+          <p className="text-xs text-[var(--fg-muted)] leading-relaxed whitespace-pre-wrap">{(finding as any).reasoning}</p>
         </Card>
       )}
 
@@ -43,9 +78,9 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           <span className="text-[11px] mono text-[var(--fg-dim)] block mb-3">proof plan</span>
 
           {finding.proofPlan.steps && (
-            <ol className="list-decimal list-inside space-y-1 text-xs text-[var(--fg-muted)] mb-4">
+            <ol className="list-decimal list-inside space-y-1.5 text-xs text-[var(--fg-muted)] mb-4">
               {finding.proofPlan.steps.map((step: string, i: number) => (
-                <li key={i}>{step}</li>
+                <li key={i} className="leading-relaxed">{step}</li>
               ))}
             </ol>
           )}
@@ -68,7 +103,7 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           {finding.proofPlan.harness && (
             <details className="mt-3">
               <summary className="text-[10px] mono text-[var(--accent)] cursor-pointer hover:brightness-110">
-                view harness
+                view harness code
               </summary>
               <pre className="mt-2 p-3 bg-[var(--bg)] rounded border border-[var(--border)] text-[10px] mono text-[var(--fg-muted)] overflow-x-auto whitespace-pre-wrap">
                 {finding.proofPlan.harness}
@@ -93,7 +128,7 @@ export function FindingDetail({ finding }: { finding: Finding }) {
       {finding.fixPlan && (
         <Card>
           <span className="text-[11px] mono text-[var(--fg-dim)] block mb-2">remediation</span>
-          <p className="text-xs text-[var(--fg-muted)] mb-3">{finding.fixPlan.description}</p>
+          <p className="text-xs text-[var(--fg-muted)] mb-3 leading-relaxed">{finding.fixPlan.description}</p>
 
           {finding.fixPlan.code && (
             <pre className="p-3 bg-[var(--bg)] rounded border border-[var(--border)] text-[10px] mono text-[var(--fg-muted)] overflow-x-auto whitespace-pre-wrap">
