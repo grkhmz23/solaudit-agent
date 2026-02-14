@@ -20,6 +20,7 @@ import { runPipeline } from "../pipeline";
 import { runPipelineV2, v2ResultToV1, runHybridPipeline, loadV2Config } from "../v2/index";
 import { buildV2Advisory } from "../v2/report/index";
 import type { V2PipelineResult } from "../v2/types";
+import { runPatchPipeline, v2PatchesToLegacy, type PatchPipelineResult, type V2PatchResult } from "../v2/patch/index";
 import { generatePatches, type CodePatch } from "../remediation/patcher";
 import { executePocs, type PoCResult } from "../proof/executor";
 import { generatePoCs, type GeneratedPoC } from "../proof/llm-poc-generator";
@@ -192,14 +193,48 @@ export async function runAgent(
 
       // ════════════════════════════════════════════════════════════
       // V2-native path: V2 already did LLM confirmation + PoC.
-      // Skip V1 enrichment, PoC, and advisory entirely.
+      // Now: Kimi Patch Author → Validate → Advisory → PR
       // ════════════════════════════════════════════════════════════
       if (isV2 && v2Result) {
-        // —— V2 Step 3: Generate patches from V2 findings ——
-        await progress("patch", "Generating code patches...");
-        const patches = generatePatches(actionable, pipelineResult.program, repoDir);
-        run.patches = patches;
-        await progress("patch", `${patches.length} file(s) patched`);
+        // —— V2 Step 3: Kimi Patch Author (LLM-powered patches) ——
+        let patches: CodePatch[] = [];
+        let patchPipelineResult: PatchPipelineResult | null = null;
+
+        if (v2Config.patchAuthor && actionable.length > 0) {
+          await progress("patch", "Kimi patch author: generating validated patches...");
+          try {
+            patchPipelineResult = await runPatchPipeline(
+              v2Result.findings,
+              v2Result.program,
+              repoDir,
+              v2Config,
+              async (step, detail) => progress(step, detail),
+            );
+
+            const validated = patchPipelineResult.results.filter((r) => r.status === "validated");
+            const needsHuman = patchPipelineResult.results.filter((r) => r.status === "needs_human");
+
+            // Convert validated patches to legacy format for PR submission
+            patches = v2PatchesToLegacy(patchPipelineResult.results, repoDir);
+            run.patches = patches;
+
+            await progress("patch",
+              `Kimi patches: ${validated.length} validated, ${needsHuman.length} needs_human ` +
+              `(${patchPipelineResult.metrics.totalDurationMs}ms)`
+            );
+          } catch (e: any) {
+            console.error(`[orchestrator] Kimi patch author failed: ${e.message}`);
+            await progress("patch_error", `Kimi patch author failed: ${e.message}`);
+          }
+        }
+
+        // Fallback: if Kimi patch author is disabled or produced nothing, use deterministic patcher
+        if (patches.length === 0) {
+          await progress("patch", "Fallback: deterministic patches...");
+          patches = generatePatches(actionable, pipelineResult.program, repoDir);
+          run.patches = patches;
+          await progress("patch", `${patches.length} file(s) patched (deterministic)`);
+        }
 
         // —— V2 Step 4: Advisory from V2 findings (already LLM-enriched) ——
         await progress("advisory", "Generating V2 security advisory...");
@@ -207,6 +242,14 @@ export async function runAgent(
         run.advisory = advisory;
         const advisoryPath = path.join(repoDir, "SECURITY_ADVISORY.md");
         writeFileSync(advisoryPath, advisory, "utf-8");
+
+        // Include patch validation results in advisory
+        if (patchPipelineResult) {
+          const patchSection = buildPatchSummarySection(patchPipelineResult);
+          const fullAdvisory = advisory + "\n\n" + patchSection;
+          writeFileSync(advisoryPath, fullAdvisory, "utf-8");
+          run.advisory = fullAdvisory;
+        }
 
         // —— V2 Step 5: Submission document ——
         await progress("submission_doc", "Generating bounty submission document...");
@@ -235,8 +278,9 @@ export async function runAgent(
           await progress("submission_doc_error", `Submission doc failed: ${e.message}`);
         }
 
-        // —— V2 Step 6: Submit PR ——
-        if (config.submitPRs && config.githubToken && patches.length > 0) {
+        // —— V2 Step 6: Submit PR (only if patches validated) ——
+        const validatedPatches = patchPipelineResult?.results?.filter((r) => r.status === "validated") ?? [];
+        if (config.submitPRs && config.githubToken && validatedPatches.length > 0) {
           await progress("pr", "Forking repo and opening pull request...");
           try {
             const { GitHubClient } = await import("@solaudit/github");
@@ -244,16 +288,39 @@ export async function runAgent(
 
             const prTitle = `[SolAudit] Security: ${actionable.length} finding(s) in ${repo.name}`;
             let prBody = `## SolAudit V2 Security Report\n\n`;
-            prBody += `**Engine:** V2 (tree-sitter + LLM confirmation)\n`;
-            prBody += `**Findings:** ${actionable.length} actionable\n\n`;
+            prBody += `**Engine:** V2 (tree-sitter + LLM confirmation + Kimi patch author)\n`;
+            prBody += `**Findings:** ${actionable.length} actionable\n`;
+            prBody += `**Patches:** ${validatedPatches.length} validated, build-tested\n\n`;
+
             for (const f of actionable.slice(0, 10)) {
               prBody += `- **${f.severity}** ${f.classId}: ${f.title || f.hypothesis}\n`;
             }
+
+            // Add patch rationale
+            prBody += `\n### Patch Details\n\n`;
+            for (const vp of validatedPatches) {
+              const finding = v2Result.findings.find((f) => f.id === vp.findingId);
+              prBody += `**${finding?.candidate.vulnClass || "fix"}** in \`${finding?.candidate.instruction || "?"}\`\n`;
+              prBody += `> ${vp.rationale}\n\n`;
+              if (vp.riskNotes) {
+                prBody += `⚠️ ${vp.riskNotes}\n\n`;
+              }
+            }
+
             prBody += `\n<details>\n<summary>Full Security Advisory</summary>\n\n${advisory}\n\n</details>`;
 
-            const allPatchFiles: Array<{ path: string; content: string }> = [
-              ...patches.map((p) => ({ path: p.file, content: p.patchedContent })),
-            ];
+            const allPatchFiles: Array<{ path: string; content: string }> = [];
+            for (const vp of validatedPatches) {
+              for (const p of vp.patches) {
+                try {
+                  const content = require("fs").readFileSync(
+                    require("path").join(repoDir, p.path),
+                    "utf-8",
+                  );
+                  allPatchFiles.push({ path: p.path, content });
+                } catch {}
+              }
+            }
 
             const prResult = await gh.submitFix(repo.url, {
               title: prTitle,
@@ -268,6 +335,8 @@ export async function runAgent(
             await progress("pr_error", prErr.message);
             run.error = `PR failed: ${prErr.message}`;
           }
+        } else if (config.submitPRs && validatedPatches.length === 0) {
+          await progress("pr", "Skipped PR: no validated patches to submit");
         }
 
         await progress("done", `Completed ${repo.owner}/${repo.name}`);
@@ -501,4 +570,36 @@ export async function runAgent(
     startedAt,
     finishedAt: new Date().toISOString(),
   };
+}
+
+// ─── Patch Summary for Advisory ─────────────────────────────
+
+function buildPatchSummarySection(patchResult: PatchPipelineResult): string {
+  const lines: string[] = [];
+  lines.push("## Automated Patch Summary");
+  lines.push("");
+  lines.push(`| Metric | Value |`);
+  lines.push(`|--------|-------|`);
+  lines.push(`| Patches attempted | ${patchResult.metrics.patchesAttempted} |`);
+  lines.push(`| Validated (build-tested) | ${patchResult.metrics.patchesValidated} |`);
+  lines.push(`| Needs human review | ${patchResult.metrics.patchesNeedHuman} |`);
+  lines.push(`| Failed | ${patchResult.metrics.patchesFailed} |`);
+  lines.push(`| Duration | ${(patchResult.metrics.totalDurationMs / 1000).toFixed(1)}s |`);
+  lines.push("");
+
+  for (const r of patchResult.results) {
+    if (r.status === "validated") {
+      lines.push(`### Finding #${r.findingId} — ✅ Validated`);
+      lines.push(`> ${r.rationale}`);
+      if (r.riskNotes) lines.push(`> ⚠️ ${r.riskNotes}`);
+      lines.push(`Files: ${r.patches.map((p) => p.path).join(", ")}`);
+      lines.push("");
+    } else if (r.status === "needs_human") {
+      lines.push(`### Finding #${r.findingId} — ⚠️ Needs Human Review`);
+      lines.push(`> ${r.error || "Patch could not be validated after 2 attempts"}`);
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
 }

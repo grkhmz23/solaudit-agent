@@ -34,6 +34,9 @@ import type { PipelineContext, PipelineResult, FindingResult } from "../types";
 export { loadV2Config, type V2Config } from "./config";
 export { parseRepoV2 } from "./parser/index";
 export type * from "./types";
+export { runPatchPipeline, v2PatchesToLegacy, type PatchPipelineResult, type V2PatchResult, type PatchStatus } from "./patch/index";
+export { type PatchAuthorResult, type KimiPatchResult, type KimiPatch } from "./patch/kimi-patch-author";
+export { type ValidationResult, type ValidationGate } from "./patch/patch-validator";
 
 /**
  * Run the V2 pipeline.
