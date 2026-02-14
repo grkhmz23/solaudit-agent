@@ -43,14 +43,21 @@ export interface PatchAuthorResult {
 
 // ─── LLM Client ─────────────────────────────────────────────
 
+// Kimi Code API (separate from Moonshot analyst API)
+const KIMI_CODE_API_URL = process.env.KIMI_CODE_API_URL || "https://api.kimi.com/coding/v1/chat/completions";
 const MOONSHOT_API_URL = "https://api.moonshot.ai/v1/chat/completions";
 
-function getApiKey(): string | null {
-  return process.env.MOONSHOT_API_KEY || null;
+function getCodeApiKey(): string | null {
+  return process.env.KIMI_CODE_API_KEY || process.env.MOONSHOT_API_KEY || null;
+}
+
+function getCodeApiUrl(): string {
+  if (process.env.KIMI_CODE_API_KEY) return KIMI_CODE_API_URL;
+  return MOONSHOT_API_URL;
 }
 
 function getPatchModel(): string {
-  return process.env.KIMI_PATCH_MODEL || process.env.MOONSHOT_MODEL || "kimi-k2.5";
+  return process.env.KIMI_PATCH_MODEL || "kimi-k2.5";
 }
 
 interface LLMMessage {
@@ -105,15 +112,18 @@ async function kimiPatchCall(
   messages: LLMMessage[],
   config: V2Config,
 ): Promise<string | null> {
-  const apiKey = getApiKey();
+  const apiKey = getCodeApiKey();
   if (!apiKey) return null;
 
   const timeoutMs = config.patchTimeoutMs;
+
+  console.log(`[patch-author] Using ${process.env.KIMI_CODE_API_KEY ? "Kimi Code API" : "Moonshot API"} (${getPatchModel()})`);
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const apiUrl = getCodeApiUrl();
 
       const body: any = {
         model: getPatchModel(),
@@ -125,7 +135,7 @@ async function kimiPatchCall(
       // Try json_schema first; fall back to json_object if not supported
       body.response_format = PATCH_JSON_SCHEMA;
 
-      const res = await fetch(MOONSHOT_API_URL, {
+      const res = await fetch(apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -144,7 +154,7 @@ async function kimiPatchCall(
         if (res.status === 400 && errBody.includes("json_schema") && attempt === 0) {
           console.warn("[patch-author] json_schema not supported, falling back to json_object");
           body.response_format = { type: "json_object" };
-          const retryRes = await fetch(MOONSHOT_API_URL, {
+          const retryRes = await fetch(apiUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
