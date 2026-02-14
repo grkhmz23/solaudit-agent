@@ -17,6 +17,7 @@ import { execSync, type ExecSyncOptions } from "child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { runPipeline } from "../pipeline";
+import { runPipelineV2, v2ResultToV1, runHybridPipeline, loadV2Config } from "../v2/index";
 import { generatePatches, type CodePatch } from "../remediation/patcher";
 import { executePocs, type PoCResult } from "../proof/executor";
 import { generatePoCs, type GeneratedPoC } from "../proof/llm-poc-generator";
@@ -136,13 +137,28 @@ export async function runAgent(
 
       // —— Step 2: Audit pipeline ——
       await progress("audit", `Running ${mode} pipeline...`);
-      const pipelineResult = await runPipeline({
+      const v2Config = loadV2Config();
+      const pipelineCtx = {
         repoPath: repoDir,
         mode: mode as "SCAN" | "PROVE" | "FIX_PLAN",
-        onProgress: async (stage, pct) => {
+        onProgress: async (stage: string, pct: number) => {
           await progress("pipeline", `${stage} ${pct}%`);
         },
-      });
+      };
+
+      let pipelineResult;
+      if (v2Config.engineVersion === "v2") {
+        console.log("[orchestrator] Engine version: V2");
+        const v2Result = await runPipelineV2(pipelineCtx);
+        pipelineResult = v2ResultToV1(v2Result);
+      } else if (v2Config.engineVersion === "hybrid") {
+        console.log("[orchestrator] Engine version: HYBRID");
+        const v2Result = await runHybridPipeline(pipelineCtx, runPipeline);
+        pipelineResult = v2ResultToV1(v2Result);
+      } else {
+        console.log("[orchestrator] Engine version: V1");
+        pipelineResult = await runPipeline(pipelineCtx);
+      }
       run.pipelineResult = pipelineResult;
 
       const actionable = pipelineResult.findings.filter(
