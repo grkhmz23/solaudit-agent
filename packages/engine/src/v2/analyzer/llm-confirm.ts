@@ -61,7 +61,7 @@ async function llmCall(
           model: MOONSHOT_MODEL,
           messages,
           max_tokens: maxTokens,
-          temperature: 0.2,
+          temperature: 1,
         }),
         signal: controller.signal,
       });
