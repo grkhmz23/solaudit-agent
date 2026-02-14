@@ -17,36 +17,47 @@ import type { EnrichedFinding } from "../llm/analyzer";
 
 // ─── Config ─────────────────────────────────────────────────
 
-// Prefer Kimi Code API (separate rate-limit pool from analyzer's Moonshot).
-// Falls back to Moonshot if KIMI_CODE_API_KEY is not set.
+// Provider selection: POC_PROVIDER=auto|kimi_code|moonshot
+// "auto" (default): prefers Kimi Code if KIMI_CODE_API_KEY is set, else Moonshot.
+
+type PocProvider = "kimi_code" | "moonshot";
+
+function resolvePocProvider(): PocProvider {
+  const explicit = process.env.POC_PROVIDER?.toLowerCase();
+  if (explicit === "kimi_code" || explicit === "moonshot") return explicit;
+  // auto: prefer Kimi Code (separate rate-limit pool from analyzer's Moonshot)
+  return process.env.KIMI_CODE_API_KEY ? "kimi_code" : "moonshot";
+}
 
 function getPocApiUrl(): string {
-  if (process.env.KIMI_CODE_API_KEY) {
-    return "https://api.kimi.com/coding/v1/chat/completions";
-  }
-  return "https://api.moonshot.ai/v1/chat/completions";
+  return resolvePocProvider() === "kimi_code"
+    ? "https://api.kimi.com/coding/v1/chat/completions"
+    : "https://api.moonshot.ai/v1/chat/completions";
 }
 
 function getPocApiKey(): string | null {
-  return process.env.KIMI_CODE_API_KEY || process.env.MOONSHOT_API_KEY || null;
+  const provider = resolvePocProvider();
+  if (provider === "kimi_code") return process.env.KIMI_CODE_API_KEY || null;
+  return process.env.MOONSHOT_API_KEY || null;
 }
 
 function getPocModel(): string {
-  return process.env.KIMI_PATCH_MODEL || process.env.MOONSHOT_MODEL || "kimi-k2.5";
+  return process.env.LLM_POC_MODEL || process.env.MOONSHOT_MODEL || "kimi-k2.5";
 }
 
 const POC_CFG = {
-  maxTokens: int("LLM_POC_MAX_TOKENS", 8192),
-  timeoutMs: int("LLM_POC_TIMEOUT_MS", 120_000),
-  retries: int("LLM_POC_RETRIES", 2),
-  concurrency: int("LLM_POC_CONCURRENCY", 1), // sequential: avoids rate-limit storms
-  maxPocs: int("LLM_POC_MAX", 10),
-  interRequestDelayMs: int("LLM_POC_DELAY_MS", 2000), // cooldown between calls
+  maxTokens: safeInt("LLM_POC_MAX_TOKENS", 4096),
+  timeoutMs: safeInt("LLM_POC_TIMEOUT_MS", 120_000),
+  retries: safeInt("LLM_POC_RETRIES", 2),
+  concurrency: safeInt("LLM_POC_CONCURRENCY", 1), // sequential: avoids rate-limit storms
+  maxPocs: safeInt("LLM_POC_MAX", 10),
+  interRequestDelayMs: safeInt("LLM_POC_DELAY_MS", 2000), // cooldown between calls
 };
 
-function int(key: string, fallback: number): number {
+function safeInt(key: string, fallback: number): number {
   const v = process.env[key];
-  return v ? parseInt(v, 10) : fallback;
+  const n = v ? parseInt(v, 10) : NaN;
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // ─── Types ──────────────────────────────────────────────────
@@ -76,11 +87,13 @@ async function sleep(ms: number): Promise<void> {
 
 async function callLLM(system: string, user: string): Promise<string> {
   const apiKey = getPocApiKey();
-  if (!apiKey) throw new Error("KIMI_CODE_API_KEY or MOONSHOT_API_KEY not set");
+  const provider = resolvePocProvider();
+  const apiName = provider === "kimi_code" ? "Kimi Code" : "Moonshot";
+  if (!apiKey) throw new Error(`${apiName} API key not set (POC_PROVIDER=${provider})`);
 
   const apiUrl = getPocApiUrl();
   const model = getPocModel();
-  const apiName = process.env.KIMI_CODE_API_KEY ? "Kimi Code" : "Moonshot";
+  let maxTokens = POC_CFG.maxTokens;
 
   for (let attempt = 0; attempt <= POC_CFG.retries; attempt++) {
     const controller = new AbortController();
@@ -95,7 +108,7 @@ async function callLLM(system: string, user: string): Promise<string> {
         },
         body: JSON.stringify({
           model,
-          max_tokens: POC_CFG.maxTokens,
+          max_tokens: maxTokens,
           temperature: 1,
           messages: [
             { role: "system", content: system },
@@ -107,17 +120,43 @@ async function callLLM(system: string, user: string): Promise<string> {
 
       clearTimeout(timer);
 
-      // Retry on 429, 5xx, AND 400 (Moonshot sends 400 for rate-limits
-      // with misleading "invalid temperature" errors)
-      if (res.status === 429 || res.status >= 500 || res.status === 400) {
-        const body = await res.text().catch(() => "");
+      // ── Retryable: 429 (rate-limit) and 5xx (server error) ──
+      if (res.status === 429 || res.status >= 500) {
         const delay = 3000 * Math.pow(2, attempt);
         console.warn(`[poc-gen] ${apiName} ${res.status}, retry ${attempt + 1}/${POC_CFG.retries + 1} in ${delay}ms`);
         if (attempt < POC_CFG.retries) {
           await sleep(delay);
           continue;
         }
+        const body = await res.text().catch(() => "");
         throw new Error(`${apiName} ${res.status}: ${body.slice(0, 300)}`);
+      }
+
+      // ── 400: only retry if transient; fail fast otherwise ──
+      if (res.status === 400) {
+        const body = await res.text().catch(() => "");
+        const lower = body.toLowerCase();
+
+        // Transient signals (some providers send 400 for rate-limits)
+        const transient = ["rate limit", "overloaded", "try again", "temporarily", "throttl"];
+        if (transient.some((t) => lower.includes(t)) && attempt < POC_CFG.retries) {
+          const delay = 3000 * Math.pow(2, attempt);
+          console.warn(`[poc-gen] ${apiName} 400 (transient), retry ${attempt + 1}/${POC_CFG.retries + 1} in ${delay}ms`);
+          await sleep(delay);
+          continue;
+        }
+
+        // Token-limit error: downshift max_tokens and retry once
+        if ((lower.includes("max_tokens") || lower.includes("context length") || lower.includes("too many tokens"))
+            && attempt < POC_CFG.retries && maxTokens > 2048) {
+          maxTokens = Math.floor(maxTokens / 2);
+          console.warn(`[poc-gen] ${apiName} 400 (token limit), downshifting max_tokens to ${maxTokens}`);
+          await sleep(1000);
+          continue;
+        }
+
+        // Deterministic error: fail fast (invalid model, bad params, etc.)
+        throw new Error(`${apiName} 400 (deterministic): ${body.slice(0, 300)}`);
       }
 
       if (!res.ok) {
@@ -225,6 +264,7 @@ Rules for the test code:
 - Write a COMPLETE, RUNNABLE Anchor test file (.ts)
 - Import from @coral-xyz/anchor and @solana/web3.js
 - Use describe/it blocks with Mocha
+- The describe block MUST start with "PoC#" followed by the class ID, e.g. describe("PoC#42: missing_signer", ...)
 - Create realistic account setup (PDAs, token accounts, keypairs)
 - Show the EXACT exploit path: what the attacker does, which accounts are passed
 - The test should SUCCEED if the vulnerability exists (proving it's exploitable)
@@ -350,7 +390,7 @@ Write a complete, runnable PoC test that demonstrates this vulnerability is expl
           assertion: String(parsed.assertion || finding.proofPlan?.deltaSchema?.assertion || "Vulnerability exploitable"),
         },
         runCommand: isAnchor
-          ? `cd <repo> && anchor test -- --grep "${finding.title.slice(0, 60)}"`
+          ? `cd <repo> && anchor test -- --grep "PoC#${finding.classId}"`
           : `cd <repo> && cargo test-sbf poc_${finding.classId}_${safeName}`,
         status: "generated",
       };
@@ -406,7 +446,7 @@ import { expect } from "chai";
  * If the program is vulnerable, the exploit transaction succeeds.
  * If the program is secure, the transaction is rejected.
  */
-describe("PoC: ${finding.className} — ${finding.title.slice(0, 60)}", () => {
+describe("PoC#${finding.classId}: ${finding.className} — ${finding.title.slice(0, 60)}", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.${capitalize(program.name)} as Program<${capitalize(program.name)}>;
@@ -595,8 +635,9 @@ export async function generatePoCs(
   }
 
   // LLM-powered generation — sequential with cooldown to avoid rate-limits
-  const usingApi = process.env.KIMI_CODE_API_KEY ? "Kimi Code" : "Moonshot";
-  console.log(`[poc-gen] Generating via ${usingApi} API (concurrency: ${POC_CFG.concurrency}, delay: ${POC_CFG.interRequestDelayMs}ms)`);
+  const provider = resolvePocProvider();
+  const providerLabel = provider === "kimi_code" ? "Kimi Code" : "Moonshot";
+  console.log(`[poc-gen] Generating via ${providerLabel} API (model: ${getPocModel()}, concurrency: ${POC_CFG.concurrency}, delay: ${POC_CFG.interRequestDelayMs}ms)`);
   const limit = pLimit(POC_CFG.concurrency);
 
   const results = await Promise.all(
