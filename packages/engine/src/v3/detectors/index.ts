@@ -414,10 +414,10 @@ export function detectStalePostCPI(program: ParsedProgramV2): VulnCandidate[] {
               endLine: ix.ref.startLine + i + Math.min(postCpiLines.length, 10),
             },
             cpiTarget
-              ? [{ name: cpiTarget.targetProgram || "unknown_program", constraints: [] }]
+              ? [{ name: cpiTarget.targetExpr || "unknown_program", constraints: [] }]
               : [],
             `Account state read after CPI call in '${ix.name}' at line ${ix.ref.startLine + i} without reload. ` +
-              `The CPI target${cpiTarget ? ` (${cpiTarget.targetProgram})` : ""} may have mutated the accounts. ` +
+              `The CPI target${cpiTarget ? ` (${cpiTarget.targetExpr})` : ""} may have mutated the accounts. ` +
               `Reading stale state can lead to incorrect calculations, double-spends, or fund theft.`,
             undefined,
             line.trim(),
