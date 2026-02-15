@@ -47,7 +47,7 @@ export function Nav() {
 
         <div className="flex items-center gap-2 text-[10px] mono text-[var(--fg-dim)]">
           <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] opacity-60" />
-          v2.0
+          v3.0
         </div>
       </div>
     </header>
