@@ -198,3 +198,40 @@ function gradedToActualWithRemapping(
       } as ActualFinding & { _instructionAliases?: string[] };
     });
 }
+
+// ─── V3 → V2 Result Converter ────────────────────────────
+// Converts V3PipelineResult back to V2PipelineResult so the
+// existing V2 agent path (advisory, patches, PR) works unchanged.
+
+export function v3ResultToV2(v3: V3PipelineResult): V2PipelineResult {
+  // Build a new findings array from graded findings
+  // Graded findings with enforcedSeverity >= MEDIUM become the actionable set
+  const SEVERITY_ORDER: Record<CandidateSeverity, number> = {
+    CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0,
+  };
+
+  const findings: V2Finding[] = v3.gradedFindings.map((g) => ({
+    id: g.finding.id,
+    candidate: g.finding.candidate,
+    llmConfirmation: g.finding.llmConfirmation,
+    pocResult: g.finding.pocResult,
+    status: SEVERITY_ORDER[g.enforcedSeverity] >= SEVERITY_ORDER["MEDIUM"]
+      ? g.finding.status === "REJECTED" ? "NEEDS_HUMAN" as FindingStatus : g.finding.status
+      : "REJECTED" as FindingStatus,
+    finalSeverity: g.enforcedSeverity,
+    finalConfidence: g.finding.finalConfidence,
+  }));
+
+  return {
+    program: v3.v2Result.program,
+    candidates: v3.allCandidates,
+    findings,
+    metrics: {
+      ...v3.v2Result.metrics,
+      // Extend with V3 metrics
+      totalDurationMs: v3.v2Result.metrics.totalDurationMs + v3.v3Metrics.v3DurationMs,
+    },
+    v1Findings: v3.v2Result.v1Findings,
+    hybridComparison: v3.v2Result.hybridComparison,
+  };
+}

@@ -4,7 +4,7 @@
  * Read from environment. Controls which V2 features are active.
  */
 
-export type EngineVersion = "v1" | "v2" | "hybrid";
+export type EngineVersion = "v1" | "v2" | "v3" | "hybrid";
 
 export interface V2Config {
   /** Which engine to run: v1, v2, or hybrid (runs both + comparison). */
@@ -47,9 +47,9 @@ function envInt(key: string, fallback: number): number {
 }
 
 export function loadV2Config(): V2Config {
-  const raw = (process.env.AUDIT_ENGINE_VERSION || "v1").toLowerCase();
+  const raw = (process.env.AUDIT_ENGINE_VERSION || "v3").toLowerCase();
   const engineVersion: EngineVersion =
-    raw === "v2" ? "v2" : raw === "hybrid" ? "hybrid" : "v1";
+    raw === "v2" ? "v2" : raw === "v3" ? "v3" : raw === "hybrid" ? "hybrid" : "v1";
 
   return {
     engineVersion,

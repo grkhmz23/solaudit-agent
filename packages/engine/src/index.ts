@@ -41,3 +41,8 @@ export type {
   HybridComparison,
 } from "./v2/types";
 export type { V2Summary } from "./v2/report/index";
+
+// ── V3 Engine ──
+
+export { runV3Pipeline, v3ResultToV2 } from "./v3/index";
+export type { V3PipelineResult } from "./v3/index";

@@ -3,7 +3,7 @@ entrypoint = "start.js"
 modules = ["nodejs-20", "python-3.11"]
 [nix]
 channel = "stable-24_05"
-packages = ["psmisc"]
+packages = ["psmisc", "zip", "unzipNLS"]
 [deployment]
 run = ["node", "start.js"]
 build = ["bash", "scripts/build.sh"]

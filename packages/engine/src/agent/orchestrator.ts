@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { runPipeline } from "../pipeline";
 import { runPipelineV2, v2ResultToV1, runHybridPipeline, loadV2Config } from "../v2/index";
+import { runV3Pipeline, v3ResultToV2 } from "../v3/pipeline";
 import { buildV2Advisory } from "../v2/report/index";
 import type { V2PipelineResult } from "../v2/types";
 import { runPatchPipeline, v2PatchesToLegacy, type PatchPipelineResult, type V2PatchResult } from "../v2/patch/index";
@@ -153,9 +154,21 @@ export async function runAgent(
 
       let pipelineResult;
       let v2Result: V2PipelineResult | null = null;
-      const isV2 = v2Config.engineVersion === "v2" || v2Config.engineVersion === "hybrid";
+      const isV2 = v2Config.engineVersion === "v2" || v2Config.engineVersion === "v3" || v2Config.engineVersion === "hybrid";
 
-      if (v2Config.engineVersion === "v2") {
+      if (v2Config.engineVersion === "v3") {
+        console.log("[orchestrator] Engine version: V3 (V2 + detectors + trust grade)");
+        const rawV2 = await runPipelineV2(pipelineCtx);
+        const v3Result = runV3Pipeline(rawV2);
+        v2Result = v3ResultToV2(v3Result);
+        pipelineResult = v2ResultToV1(v2Result);
+        const m = v3Result.v3Metrics;
+        const g = v3Result.grades;
+        console.log(
+          `[orchestrator] V3: ${m.v2CandidateCount} V2 + ${m.v3CandidateCount} V3 candidates → ` +
+          `${m.postFilterFindings} actionable (grades A=${g.A} B=${g.B} C=${g.C} D=${g.D})`,
+        );
+      } else if (v2Config.engineVersion === "v2") {
         console.log("[orchestrator] Engine version: V2");
         v2Result = await runPipelineV2(pipelineCtx);
         pipelineResult = v2ResultToV1(v2Result);
@@ -288,9 +301,12 @@ export async function runAgent(
             const { GitHubClient } = await import("@solaudit/github");
             const gh = new GitHubClient(config.githubToken);
 
+            const engineLabel = v2Config.engineVersion === "v3"
+              ? "V3 (tree-sitter + detectors + trust grade)"
+              : "V2 (tree-sitter + LLM confirmation + Kimi patch author)";
             const prTitle = `[SolAudit] Security: ${actionable.length} finding(s) in ${repo.name}`;
-            let prBody = `## SolAudit V2 Security Report\n\n`;
-            prBody += `**Engine:** V2 (tree-sitter + LLM confirmation + Kimi patch author)\n`;
+            let prBody = `## SolAudit ${v2Config.engineVersion.toUpperCase()} Security Report\n\n`;
+            prBody += `**Engine:** ${engineLabel}\n`;
             prBody += `**Findings:** ${actionable.length} actionable\n`;
             prBody += `**Patches:** ${validatedPatches.length} validated, build-tested\n\n`;
 

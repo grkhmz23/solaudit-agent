@@ -11,7 +11,7 @@
 export * from "./types/index";
 
 // ─── Phase A: Pipeline + Detectors + Filters ─────────────────
-export { runV3Pipeline, type V3PipelineResult } from "./pipeline";
+export { runV3Pipeline, v3ResultToV2, type V3PipelineResult } from "./pipeline";
 export * as detectors from "./detectors/index";
 export * as trustGrade from "./filters/trust-grade-filter";
 
