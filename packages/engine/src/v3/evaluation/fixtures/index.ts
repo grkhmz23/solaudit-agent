@@ -12,7 +12,7 @@
 
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
-import type { VulnClass, CandidateSeverity } from "../../v2/types";
+import type { VulnClass, CandidateSeverity } from "../../../v2/types";
 
 // ─── Types ───────────────────────────────────────────────────
 
